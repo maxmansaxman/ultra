@@ -195,32 +195,6 @@ def process_Qtegra_csv_file(d_data_file, prompt_for_params=False,
         d, db, dr = import_qtegra_file_pyarrow(d_data_file)
     else:
         d, db, dr = import_qtegra_file_legacy(d_data_file)
-    # d = pd.read_csv(d_data_file, sep=None, engine='python')
-    # print('Valid file, now calculating...')
-    # dt = d.transpose()
-    # dt['f']= dt[3].astype(float, errors='ignore')
-    # # use regexp to extract intensity data from each row
-    # i = dt['f'].str.extract('(\-*[0-9]+\.[0-9]+)',
-    #                         expand=False).dropna().index
-    # sigs = dt.loc[i,'f'].astype(float)
-    # meta = pd.DataFrame(dt.loc[i,1].str.split(':').values.tolist(),
-    #                     index=i,
-    #                     columns=['block', 'meas', 'peak'])
-    # measure_line = dt.loc[i,0].astype(int)
-    # d = pd.concat([measure_line, meta, sigs], axis = 1)
-    # d['block'] = d['block'].astype(int)
-    # # measurements with backgrounds will contain multiple blocks
-    # # so, assume largest block is a measurement block,
-    # # and all others are backgrounds
-    # measure_block = d.groupby('block').count().idxmax()['peak'] 
-    # db = d.loc[d['block']!=measure_block, :]
-    # d = d.loc[d['block'] == measure_block,:]
-    # dr = pd.DataFrame(data = d.loc[d['peak'] == '12CH3',:])
-    # dr.columns = ['measure_line', 'block', 'meas', 'peak', 'i15']
-    # dr['measure_line'] = dr['measure_line']- dr.iloc[0,:]['measure_line']
-    # dr['block'] = dr['block'].astype(int)
-    # dr['meas_line'] = dr['measure_line'].copy()
-    # dr.set_index('meas_line', inplace = True)
     if prompt_for_params:
         cycle_num, integration_time, integration_num = get_measurement_params()    
     dr = sort_by_cycles(dr, integration_num, cycle_num)
