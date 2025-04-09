@@ -134,7 +134,8 @@ def process_Qtegra_csv_file(d_data_file, prompt_for_params=False,
                             integration_time=16.7, integration_num=10,
                             cycle_num=10, sigma_filter=2,
                             prompt_for_backgrounds=True,
-                            input_tail_D2_background=False, usePyarrow=True):
+                            input_tail_D2_background=False, promptForPyarrow=True,
+                            usePyarrow=False):
     """
     Main function for importing, cleaning and processing a single .csv file
     exported by Qtegra.
@@ -184,6 +185,12 @@ def process_Qtegra_csv_file(d_data_file, prompt_for_params=False,
     else:
         print('Not a .csv file ')
         raise(TypeError)
+    if promptForPyarrow:
+        pyarChoice = input("Press l if a (l)egacy Qtegra export file or any other key to continue...").strip().lower()
+        if pyarChoice =='l':
+            usePyarrow = False
+        else:
+            usePyarrow = True
     if usePyarrow:
         d, db, dr = import_qtegra_file_pyarrow(d_data_file)
     else:
@@ -1003,7 +1010,7 @@ for i in acq_name_list:
                                                  cycle_num=cycle_num, integration_time=integration_time,
                                                  integration_num=integration_num, prompt_for_backgrounds=False,
                                                  input_tail_D2_background=True,
-                                                 usePyarrow=False)
+                                                 promptForPyarrow=True)
     drs.append(dr)
     drms.append(drm)
     file_names.append(file_name)
