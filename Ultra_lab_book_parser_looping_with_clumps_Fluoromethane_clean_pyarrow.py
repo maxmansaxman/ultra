@@ -6,9 +6,6 @@ max.k.lloyd@gmail.com
 
 """
 
-
-
-
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -17,7 +14,6 @@ mpl.rcParams.update({'mathtext.default': 'regular'})
 import pandas as pd
 import os
 from scipy.special import erf, erfinv
-# plt.style.use('ggplot')
 plt.close('all')
 
 def get_measurement_params(auto_detect=False, file_name=''):
@@ -118,15 +114,10 @@ def import_qtegra_file_pyarrow(d_data_file):
     d = d.loc[d['block'] == measure_block,:]
     
     dr = pd.DataFrame(data = d.loc[d['peak'] == '12CH3',:])
-    dr.columns = ['measure_line', 'block', 'meas', 'peak', 'i15']
-
-    
+    dr.columns = ['measure_line', 'block', 'meas', 'peak', 'i15']  
     dr['measure_line'] = dr['measure_line']- dr.iloc[0,:]['measure_line']
-    # d['meas_line'] = d['measure_line'].copy()
-    # db['meas_line'] = db['measure_line'].copy()
     dr['meas_line'] = dr['measure_line'].copy()
     d['meas_line'] = d['measure_line'].copy()
-
     dr = dr.set_index('meas_line')
     return(d, db, dr)
     
@@ -210,7 +201,6 @@ def process_Qtegra_csv_file(d_data_file, prompt_for_params=False,
         dbr.set_index('meas_line', inplace = True)
         background_masses = ['i16', 'i17']
         # prep columns for big background data merge
-        # db.rename(columns = {0:'meas_line'}, inplace = True)
         db['meas_line'] = db['measure_line'].copy()
         db['meas_line'] = db['meas_line']- db.iloc[0,:]['meas_line']
 
