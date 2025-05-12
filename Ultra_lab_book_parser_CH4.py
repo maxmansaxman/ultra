@@ -17,6 +17,7 @@ mpl.rcParams.update({'mathtext.default': 'regular'})
 import pandas as pd
 import os
 from scipy.special import erf, erfinv
+import statsmodels.api as sm
 # plt.style.use('ggplot')
 plt.close('all')
 
@@ -261,22 +262,23 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             
             # then, compute ratio
             if thisPeak != basePeak:
-                thisR = 'R' + thisPeak.strip('i_')
+                thisR = 'R' + thisPeak.strip('i_') + '_unfiltered'
                 dr[thisR] = dr[thisPeak]/dr[basePeak]
     dr['integration_time'] = integration_time
     # 3. Filter for outlier sub-integrations, calculate delta values
+    dr = filter_out_signal_spikes(dr, peakIDs, integration_time, basedOn='_unfiltered')
     # Calculate confidence interval expected given the number of observations. 
     # I.e., sigma window in which all observations should fall
     proportional_confidence_interval = np.sqrt(2)*erfinv(
         1.0 - 1.0/(integration_num*2.0))
-    dr = filter_for_outliers(dr, peakIDs, sigma_filter=sigma_filter)
+    dr = filter_for_outliers(dr, peakIDs, sigma_filter=sigma_filter, basedOn='_stable')
     # if db.size > 5:
     #     dr = filter_for_max_ratios(dr, peakIDs,
     #                                sigma_filter=proportional_confidence_interval*2,
     #                                dbr=dbr)
     # else:    
     dr = filter_for_max_ratios(dr, peakIDs,
-                               sigma_filter=proportional_confidence_interval*2)
+                               sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
     drm = calculate_deltas(dr, peakIDs)
     return(dr, drm, file_name)
 
@@ -403,7 +405,67 @@ def sort_by_cycles(dr, integration_num, cycle_num=None):
     dr['is_sample'] = dr['cycle_number']%2
     return(dr)
 
-def filter_for_outliers(dr, peakIDs, sigma_filter=3):
+def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, basedOn='_unfiltered'):
+    """
+    Performs a robust linear regression on base peak to identify signal spikes
+
+    Parameters
+    ----------
+    dr : pd.DataFrame
+        DataFrame of measurement observations.
+    peakIDs : list
+        List of peaks, used to ID base peak.
+    weightCutoff : float, optional
+        Cutoff passed to RLM results, points less than weight are outliers 
+        and excluded from subsequent tests. The default is 0.5.
+
+    Returns
+    -------
+    dr : pd.Dataframe
+        DataFrame with new columns for outliers added
+
+    """
+    # assume base peak is first peak in list
+    basePeak = peakIDs[0]
+    dr['signal_is_stable'] = True
+    # loop through measure lines
+    for measureLine in dr['measure_line'].unique():
+        thisDr = dr.loc[dr['measure_line']==measureLine, :]
+        # get Xogdr
+        X = thisDr['integration_number'].values
+        X = sm.add_constant(X)
+        # get Y
+        yTrue = thisDr[basePeak].values
+        # fit with robust linear model
+        # use default settings for now
+        resRLM = sm.RLM(yTrue, X,  M=sm.robust.norms.TrimmedMean()).fit()
+        # find unstable ones
+        shotNoise = np.sqrt(resRLM.params[0]*integration_time)
+        unstableIntegrations = X[(np.abs(resRLM.resid*integration_time/shotNoise) > zscoreCutoff), 1]
+        # apply to dr
+        dr.loc[(dr['measure_line']==measureLine) & (
+            dr['integration_number'].isin(unstableIntegrations)),
+            'signal_is_stable'] = False
+    
+    # now, filter based on this condition
+    sigs_to_rd = {}
+    for peak in peakIDs[1:]:
+        mass = peak.strip('i_')
+        sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
+    # loop through and apply filter
+    for i in sigs_to_rd.keys():
+        if i in dr.columns:
+            filter_ratio,d = sigs_to_rd[i]
+            filter_ratio_base = filter_ratio + basedOn
+            filter_ratio_applied = filter_ratio + '_stable'
+            dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
+            dr.loc[~dr['signal_is_stable'], filter_ratio_applied] = np.nan
+    return(dr)
+        
+        
+    
+
+def filter_for_outliers(dr, peakIDs, sigma_filter=3, basedOn = '_stable'):
     """
     Perfoms a simple outlier test on populations of sub-integrations
 
@@ -431,15 +493,17 @@ def filter_for_outliers(dr, peakIDs, sigma_filter=3):
     for i in sigs_to_rd.keys():
         if i in dr.columns:
             filter_ratio,d = sigs_to_rd[i]
+            filter_ratio_base = filter_ratio + basedOn
+            filter_ratio_applied = filter_ratio + '_cln'
             dr['is_outlier'] = ((
-                np.abs(drm[filter_ratio]-dg[filter_ratio].mean())
-                )/dg[filter_ratio].std()> sigma_filter
-                ).reset_index()[filter_ratio].copy()
-            dr[filter_ratio+'_unfiltered'] = dr[filter_ratio].copy()
-            dr.loc[dr['is_outlier'],filter_ratio] = np.nan
+                np.abs(drm[filter_ratio_base]-dg[filter_ratio_base].mean())
+                )/dg[filter_ratio_base].std()> sigma_filter
+                ).reset_index()[filter_ratio_base].copy()
+            dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
+            dr.loc[dr['is_outlier'], filter_ratio_applied] = np.nan
     return(dr)
     
-def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5):
+def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, basedOn='_stable'):
     """
     Outlier test for off-peak drifts. Flags sub-integrations where measurement
     drifts off-peak, based on observing ratios below a certain threshold
@@ -472,8 +536,9 @@ def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5):
     for i in sigs_to_rd.keys():
         if i in dr.columns:
             shot_noise_signal = i
-            frf,d = sigs_to_rd[i]
-            filter_ratio = frf+'_unfiltered'
+            filter_ratio,d = sigs_to_rd[i]
+            filter_ratio_base = filter_ratio + basedOn
+            filter_ratio_applied = filter_ratio + '_on_peak'
             if len(dbr) == 0:
                 shot_noise_std_devs = np.sqrt(
                     dg[shot_noise_signal].mean()*dg['integration_time'].mean()
@@ -484,11 +549,11 @@ def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5):
                         dbr['is_outlier'] == False, shot_noise_signal].std()**2
                     )/(dg[basePeak].mean())                
         # use fourth-highest to buffer angainst strays
-            dr['is_off_peak'] = ((dg[filter_ratio].apply(
-                lambda x: x.sort_values().iloc[-nHighest])-drm[filter_ratio]
+            dr['is_off_peak'] = ((dg[filter_ratio_base].apply(
+                lambda x: x.sort_values().iloc[-nHighest])-drm[filter_ratio_base]
                 )/shot_noise_std_devs > sigma_filter).reset_index()[0].copy()
-            dr[frf+'_on_peak'] = dr[filter_ratio].copy()
-            dr.loc[dr['is_off_peak'],frf+'_on_peak'] = np.nan
+            dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
+            dr.loc[dr['is_off_peak'],filter_ratio_applied] = np.nan
     return(dr)
 
 def filter_for_signal_stability(dbr, integration_num,
@@ -618,16 +683,16 @@ def calculate_deltas(dr, peakIDs):
     for i in sigs_to_rd.keys():
         if i in dr.columns:
             r,d = sigs_to_rd[i]             
-            dr[r+'_std'] = dr.loc[dr['is_sample'] == 0, r]
-            dr[r+'_sample'] = dr.loc[dr['is_sample'] == 1, r]
-            cols_needed.extend([i,r+'_unfiltered', r+'_on_peak', r])
+            dr[r+'_std'] = dr.loc[dr['is_sample'] == 0, r + '_stable']
+            dr[r+'_sample'] = dr.loc[dr['is_sample'] == 1, r + '_stable']
+            cols_needed.extend([i,r+'_unfiltered', r+'_on_peak', r+'_stable', r+'_cln'])
     dg =dr.groupby('measure_line')
     drm = pd.DataFrame(data = dg[cols_needed].mean())
     drm['P_imbalance'] = np.nan
     i_sample = drm.loc[drm['is_sample']==1,'measure_line'].values
-    drm['percent_on_peak'] = dr.loc[dr['is_off_peak'] == False].groupby(
-        'measure_line')['is_off_peak'].count()/dr.groupby(
-            'measure_line')['is_off_peak'].count()*100
+    drm['percent_on_peak'] = dr.loc[(dr['is_off_peak'] == False) & (dr['signal_is_stable'])].groupby(
+        'measure_line')[basePeak].count()/dr.groupby(
+            'measure_line')[basePeak].count()*100
     while True:
         try: 
             drm.loc[i_sample, 'P_imbalance'] = (drm.loc[i_sample, basePeak]/(
@@ -644,9 +709,9 @@ def calculate_deltas(dr, peakIDs):
     for i in sigs_to_rd.keys():
         if i in dr.columns:
             r,d = sigs_to_rd[i]             
-            dr[r+'_std'] = dr.loc[dr['is_sample'] == 0, r]
-            dr[r+'_sample'] = dr.loc[dr['is_sample'] == 1, r]
-            for to_append in ['', '_on_peak', '_unfiltered']:
+            dr[r+'_std'] = dr.loc[dr['is_sample'] == 0, r+'_stable']
+            dr[r+'_sample'] = dr.loc[dr['is_sample'] == 1, r+'_stable']
+            for to_append in ['_stable', '_on_peak', '_cln', '_unfiltered']:
                 this_d = d + to_append
                 this_r = r + to_append
                 drm[this_d] = np.nan
@@ -697,8 +762,8 @@ def export_data(dr, drm, file_name, peakIDs):
     for i in sigs_to_rd.keys():
         if i in dr.columns:
             r,d = sigs_to_rd[i]
-            cols_to_export.extend([i+'_raw', i, r+'_unfiltered', r,
-                                   r+'_on_peak', r+'_std', r+'_sample'])
+            cols_to_export.extend([i+'_raw', i, r+'_unfiltered', r+'_stable',
+                                   r+'_cln', r+'_on_peak', r+'_std', r+'_sample'])
     
     cols_to_export_all = cols_to_export.copy()
     dr.to_excel('{0}_processed_export_all.xlsx'.format(file_name),
