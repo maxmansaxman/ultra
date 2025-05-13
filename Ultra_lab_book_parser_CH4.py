@@ -161,15 +161,14 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     # commands that could make processing simpler later
     dp = d.pivot(columns='peak', values='f', index='measure_line')
     dp = dp.reset_index()
-    dp = dp.merge(d.loc[d['peak']==basePeak,['measure_line', 'block', 'meas']],
+    dp = dp.merge(d.groupby('measure_line')[['block', 'meas']].first().reset_index(),
                   how='left', on='measure_line')
     dp[peakIDs_cln] = dp[peakIDs_cln].astype(float)
     # apply block IDs
     dp['blockID'] = dp['block'].map(dict(zip(range(1, len(blockIDs)+1), blockIDs)))
     db = dp.loc[dp['blockID']=='bg', :].copy()
     dr = dp.loc[dp['blockID'] == 'meas',:].copy()
-    if 'frag' in blockIDs:
-        dfrag = dp.loc[dp['blockID'] == 'frag',:].copy()
+
 
     
     dr['measure_line'] = dr['measure_line']- dr.iloc[0,:]['measure_line']
@@ -179,6 +178,9 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     if prompt_for_params:
         cycle_num, integration_time, integration_num = get_measurement_params()    
     dr = sort_by_cycles(dr, integration_num, cycle_num=cycle_num)
+    if 'frag' in blockIDs:
+        dfrag = dp.loc[dp['blockID'] == 'frag',:].copy()
+        dfrag = sort_by_cycles(dfrag, integration_num)
         
     # 2. Process and apply backgrounds measurements
     if db.size > 0:   
@@ -227,10 +229,8 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                                         'or (c)ustom background corrections? ').lower()
                 # then, apply to sample and standard separately
                 if bckgrnd_choice == 'd':
-                    dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
-                        dr['is_sample']==False,thisPeak +'_raw'] - dbg[thisPeak].mean()[0]
-                    dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
-                        dr['is_sample']==True,thisPeak + '_raw'] - dbg[thisPeak].mean()[1]
+                    bgfs = [dbg[thisPeak].mean()[0], dbg[thisPeak].mean()[1]]
+   
                 elif bckgrnd_choice == 'c':
                     manual_background_std = input(
                         'Input a background value for peak {0} on wg, '
@@ -241,25 +241,30 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                         'or press enter to calculate automatically...'.format(
                             thisPeak)).strip()
                     if len(manual_background_std) > 0:
-                        dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
-                            dr['is_sample']==False,thisPeak + '_raw'] - float(manual_background_std)
-                        dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
-                            dr['is_sample']==True,thisPeak + '_raw'] - float(manual_background_sa)
+                        bgfs = [manual_background_std, manual_background_sa]
+
 
                 else:
                     # otherwise, apply the same to both
-                    dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
-                        dr['is_sample']==False,thisPeak + '_raw'] - dbg[thisPeak].mean().mean()
-                    dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
-                        dr['is_sample']==True,thisPeak + '_raw'] - dbg[thisPeak].mean().mean()
+                    bgfs = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
+
                  
             else:
                 # otherwise, apply the same to both
-                dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
-                    dr['is_sample']==False,thisPeak + '_raw'] - dbg[thisPeak].mean().mean()
-                dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
-                    dr['is_sample']==True,thisPeak + '_raw'] - dbg[thisPeak].mean().mean()
-            
+                bgfs = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
+
+            dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
+                dr['is_sample']==False,thisPeak + '_raw'] - bgfs[0]
+            dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
+                dr['is_sample']==True,thisPeak + '_raw'] - bgfs[1]
+            # if a frag df, apply to here, too
+            if 'frag' in blockIDs:
+                # use the frag + 1 background
+                if thisPeak =='i16':
+                    dfrag['i15_raw'] = dfrag['i15'].copy()
+                    dfrag.loc[dfrag['is_sample']==False,'i15'] -= bgfs[0]
+                    dfrag.loc[dfrag['is_sample']==True,'i15'] -= bgfs[1]            
+
             # then, compute ratio
             if thisPeak != basePeak:
                 thisR = 'R' + thisPeak.strip('i_') + '_unfiltered'
@@ -280,12 +285,15 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dr = filter_for_max_ratios(dr, peakIDs,
                                sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
     drm = calculate_deltas(dr, peakIDs)
+    
+    if 'frag' in blockIDs:
+        k_factor = calculate_k_factor(dr, dfrag, plot_results=True)
     return(dr, drm, file_name)
 
-def calculate_k_factor(dr, dbr, dbg_15, plot_results=False):
+def calculate_k_factor(dr, dfrag, plot_results=False):
     """
-    Computes the k-factor (secondary methyl fragmentation rate) using the data
-    from the background scans. I.e., k where i_CH2 = k*i_CH3
+    Computes the k-factor (-H fragmentation rate) using the data
+    from the background scans. I.e., k where i_CH3 = k*i_CH4
 
     Parameters
     ----------
@@ -304,25 +312,24 @@ def calculate_k_factor(dr, dbr, dbg_15, plot_results=False):
         The mean k-factor for the dataset.
 
     """
-    frags = dbr.loc[(dbr['peak'] == 'frag13_i15'),[
-        'measure_line','is_sample','is_outlier','i15']].copy()
+    frags = dfrag.loc[:,['measure_line','is_sample','i15']].copy()
     peaks = dr.loc[(dr['measure_line'].max()-dr['measure_line'] <5), [
-        'measure_line','is_sample','is_outlier','i16']].copy()
+        'measure_line','is_sample','i16']].copy()
     # divide up sample vs std  
     frags.loc[frags['is_sample'] == True,'i15_sa'] = frags.loc[
-        (frags['is_sample'] == True) & (frags['is_outlier'] == False),'i15'] - dbg_15['i15'].mean()[1]
+        (frags['is_sample'] == True) ,'i15']
     frags.loc[frags['is_sample'] == False,'i15_std'] = frags.loc[
-        (frags['is_sample'] == False) & (frags['is_outlier'] == False),'i15'] - dbg_15['i15'].mean()[0]
+        (frags['is_sample'] == False) ,'i15']
     # same for i16
-    peaks.loc[peaks['is_sample'] == True, 'i16_sa'] = peaks.loc[
-        (peaks['is_sample'] == True) & (peaks['is_outlier'] == False), 'i16']
-    peaks.loc[peaks['is_sample'] == False, 'i16_std'] = peaks.loc[
-        (peaks['is_sample'] == False)  &(peaks['is_outlier'] == False), 'i16']
+    peaks.loc[peaks['is_sample'] == True,'i16_sa'] = peaks.loc[
+        (peaks['is_sample'] == True) ,'i16']
+    peaks.loc[peaks['is_sample'] == False,'i16_std'] = peaks.loc[
+        (peaks['is_sample'] == False) ,'i16']
     # now, append frags to end of peaks. 
     # Timing is such that this works out perfectly because both peaks and
     # frags took the same amount of time
     # this corrects for bleedout
-    pf = peaks.append(frags, ignore_index = True)
+    pf = pd.concat([peaks, frags])
     if plot_results:
         fig, ax = plt.subplots(2, figsize=(8,6))
         for i in ['std', 'sa']:
