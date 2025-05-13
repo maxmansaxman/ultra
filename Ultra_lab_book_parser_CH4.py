@@ -192,9 +192,6 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
         try:
             dbr = sort_by_cycles(db, integration_num)
             dbr['is_outlier'] = False
-            # dbr= filter_for_signal_stability_simple(dbr, peakIDs_cln,
-            #                                         sigma_filter=3,
-            #                                         group_by=['block', 'is_sample'])
             bgs = compare_sample_and_std_bgs(dbr, peakIDs_cln)
             dbg = bgs.reset_index().groupby('is_sample')
 
@@ -206,7 +203,6 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                                       'i17': [0.0, 0.0,0.0, 0.0],
                                       'is_sample': [0, 0, 1, 1]})
             dbg = db_b.groupby('is_sample')
-            # dbg_15 = db_b.copy().groupby('is_sample')
             prompt_for_backgrounds = True
 
         # 2.1 apply backgrounds
@@ -468,9 +464,6 @@ def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, bas
             dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
             dr.loc[~dr['signal_is_stable'], filter_ratio_applied] = np.nan
     return(dr)
-        
-        
-    
 
 def filter_for_outliers(dr, peakIDs, sigma_filter=3, basedOn = '_stable'):
     """
@@ -563,72 +556,6 @@ def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, base
             dr.loc[dr['is_off_peak'],filter_ratio_applied] = np.nan
     return(dr)
 
-def filter_for_signal_stability(dbr, integration_num,
-                                sigma_filter=3,
-                                count_backwards=30,
-                                signals_to_use=['i15'],
-                                b_block=2):
-    '''
-    filters backgrounds based on last 30 integrations of each cycle 
-    due to pressure switching issues during first ones
-    '''
-    # group based on last 30 integrations in each cycle
-    dbg_last = dbr.loc[(dbr['integration_number']>(
-        integration_num-count_backwards)) & (dbr['block'] == b_block),:
-            ].groupby('measure_line')
-    dbr_m = dbr.loc[(dbr['block'] == b_block),:].set_index('measure_line')
-    for i in signals_to_use:
-        if i in dbr.columns:
-            dbr.loc[dbr['block'] == b_block,'is_outlier'] = (
-                (dbr_m[i]-dbg_last[i].mean())/dbg_last[i].std()>sigma_filter
-                ).reset_index().set_index(dbr.loc[
-                    dbr['block'] == b_block].index)[i].copy()
-    return(dbr)
-
-def filter_for_signal_stability_per_side(dbr, sigma_filter=3,
-                                         count_backwards=2,
-                                         signals_to_use=['i15'],
-                                         b_block=3):
-    '''
-    filters backgrounds based on last 30 integrations of each cycle due to
-    pressure switching issues during first ones
-    '''
-    # group based on last integration block on each side
-    dbg_last = dbr.loc[(dbr['measure_line']>(dbr.loc[
-        dbr.block == b_block,'measure_line'].max()-count_backwards)) & (
-            dbr['block'] == b_block) & (dbr['is_outlier'] == False),:
-                ].groupby('is_sample')
-    for i in signals_to_use:
-        if i in dbr.columns:
-            for j in [0,1]:
-                dbr.loc[(dbr['block'] == b_block) & (dbr['is_sample'] == j) & (dbr['is_outlier'] == False), 'is_outlier'] = (
-                        dbr.loc[(dbr['block'] == b_block) & (dbr['is_sample'] == j) & (dbr['is_outlier'] == False), i]-dbg_last[i].mean()[j])/dbg_last[i].std()[j] > sigma_filter
-    return(dbr)    
-
-def filter_for_signal_stability_simple(dbr, peakIDs_obs, sigma_filter=3, group_by=['block', 'is_sample']):
-    dbr_groups = dbr.groupby(group_by)
-    bg_mean = dbr_groups[peakIDs_obs].mean()
-    bg_std = dbr_groups[peakIDs_obs].std()
-    bg_se = bg_std/np.sqrt(dbr_groups[peakIDs_obs].count())
-    bg_min = bg_mean - sigma_filter*bg_std
-    bg_max = bg_mean + sigma_filter*bg_std
-    
-    dbr_mess = dbr[list(peakIDs_obs) + group_by + ['measure_line']].astype(float).merge(
-        bg_min.reset_index(), how='left', on=group_by, suffixes=['', '_min'])
-    dbr_mess = dbr_mess.merge(
-        bg_max.reset_index(), how='left', on=group_by, suffixes=['', '_max'])
-    
-    dbr_mess['is_outlier'] = False
-    # loop through peaks and find all outlier lines'
-    for peakID in peakIDs_obs:
-        dbr_mess.loc[~dbr_mess[peakID].between(dbr_mess[peakID + '_min'], dbr_mess[peakID + '_max']), 'is_outlier'] = True
-    
-    # apply outlier col to dbr
-    dbr = dbr.reset_index()
-    dbr['is_outlier'] = dbr_mess['is_outlier']
-    dbr = dbr.set_index('meas_line')
-
-    return(dbr)
 
 def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_number', 'is_sample']):
     dbr_groups = dbr.loc[~dbr['is_outlier']].groupby(group_by)
@@ -656,12 +583,7 @@ def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_numbe
             close_sheet = input(
                 'Spreadsheet: backgrounds_mean.xlsx is open. '
                 '\n Close it and press ENTER to continue... ')
-    return(bgs)
-
-
-
-
-    
+    return(bgs)    
 
 def calculate_deltas(dr, peakIDs):
     """
@@ -722,19 +644,10 @@ def calculate_deltas(dr, peakIDs):
                 this_d = d + to_append
                 this_r = r + to_append
                 drm[this_d] = np.nan
-            # drm[d+'_on_peak'] = np.nan
-            # drm[d+'_unfiltered'] = np.nan
                 drm.loc[i_sample, this_d] = (drm.loc[i_sample, this_r]/(
                     (drm.loc[i_sample-1,this_r].values + drm.loc[
                         i_sample+1,this_r].values)/2)-1)*1000
-            # drm.loc[i_sample, d+'_unfiltered'] = (
-            #     drm.loc[i_sample, r+'_unfiltered']/((
-            #         drm.loc[i_sample-1,r+'_unfiltered'].values + drm.loc[
-            #             i_sample+1,r+'_unfiltered'].values)/2)-1)*1000
-            # drm.loc[i_sample, d+'_on_peak'] = (
-            #     drm.loc[i_sample, r+'_on_peak']/((drm.loc[
-            #         i_sample-1,r+'_on_peak'].values + drm.loc[
-            #             i_sample+1,r+'_on_peak'].values)/2)-1)*1000
+
     return(drm)
 
 def export_data(dr, drm, file_name, peakIDs):
@@ -917,10 +830,7 @@ for i in acq_name_list:
                         i_sample+1, 'delta_offset'].values]).max(axis = 0)
             except(ValueError):
                 print('Unable to align peak centers')
-                              
-        
 
-  
 # consolidate all data frames
 dr_all = drs[0].copy()
 drm_all = drms[0].copy()
