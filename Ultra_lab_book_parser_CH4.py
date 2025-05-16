@@ -31,18 +31,24 @@ def get_measurement_params(auto_detect=False, file_name=''):
         if '_dD_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 0.524, 120)
             peakIDs = ['i16', 'i17']
-            blockIDs = ['sweep', 'meas', 'frag', 'bg']
+            blockIDs = ['meas', 'frag', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif '_d13CD_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
-            peakIDs = ['i16', 'i17', 'i18']
-            blockIDs = ['sweep', 'meas', 'bg']
-            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+            if '_H3_' in file_name:
+                (cycle_num, integration_time, integration_num) = (5, 1.048, 60)
+                peakIDs = ['i16', 'i17', 'i18']
+                blockIDs = ['meas', 'bg']
+                return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+            else:
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
+                peakIDs = ['i16', 'i17', 'i18']
+                blockIDs = ['meas', 'bg']
+                return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif '_dD2_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
             peakIDs = ['i16', 'i17', 'i18']
-            blockIDs = ['sweep', 'meas', 'bg']
+            blockIDs = ['meas', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif 'D17O' in file_name: 
@@ -147,8 +153,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dn = pd.concat([dn, dn_extras], axis=1)
     peakIDs_obs = list(dn['peak'].unique())
     peakIDs_obs.remove(None)
-    
-    
+    basePeak = peakIDs_obs[0]
     dc = dn.loc[(dn[3]=='Y [cps]'), [1, 'block', 'meas', 'peak', 4]].copy()
     #rename columns to match legacy processer
     d = dc.rename(columns={1: 'measure_line', 4:'f'})
@@ -167,23 +172,8 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dp[peakIDs_cln] = dp[peakIDs_cln].astype(float)
     # apply block IDs
     dp['blockID'] = dp['block'].map(dict(zip(range(1, len(blockIDs)+1), blockIDs)))
-    # now, split things up
     db = dp.loc[dp['blockID']=='bg', :].copy()
     dr = dp.loc[dp['blockID'] == 'meas',:].copy()
-    if 'sweep' in blockIDs:
-        # extract sweep block
-        dsweep = dp.loc[dp['blockID'] == 'sweep',:].copy()
-        # remove sweep peaks from peak list
-        peakIDs_obs_full = peakIDs_obs[:]
-        peakIDs_obs = [i for i in peakIDs_obs_full if 'Collector' not in i]
-        peakIDs_cln = [i for i in peakIDs_cln if 'Collector' not in i]
-
-        # also drop these columns from dr, db, dseep
-        dr = dr.dropna(how='all', axis=1)
-        db = db.dropna(how='all', axis=1)
-        dsweep = dsweep.dropna(how='all', axis=1)
-    # now that clean, define basepeak 
-    basePeak = peakIDs_obs[0]
 
 
     
@@ -222,15 +212,40 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             prompt_for_backgrounds = True
 
         # 2.1 apply backgrounds
-        bgsUsed = {}
         for thisPeak in peakIDs:
             dr[thisPeak + '_raw'] = dr[thisPeak].copy()
             # apply bgs
             # first, check if backgrounds are significantly different at 3sigma level:
             bgDiff = np.abs(dbg[thisPeak].mean()[1] - dbg[thisPeak].mean()[0])
             bgThresh = (3*dbg[thisPeak].std()/np.sqrt(dbg[thisPeak].count())).mean()
+
+            # 2.4 Special treatment just for D2 peak, which has a tailing corr
+            if '_dD2_' in d_data_file and thisPeak=='i18':
+                if input_tail_D2_background:
+                    try:
+                        print('Measured scattered ion background on 12CH2D2 is: '
+                              '{0:.3f} cps'.format(
+                                dbg['i18'].mean().mean()))
+                    except(UnboundLocalError):
+                        print('No background scans detected')
+                    D2_tail_background_wg = input(
+                        'Input total background for 12CH2D2 on WG \n '
+                        'or press ENTER to continue... ').strip()
+                    D2_tail_background_sample = input(
+                        'Input total background for 12CH2D2 on SAMPLE \n '
+                        'or press ENTER to continue... ').strip()                    
+                    if len(D2_tail_background_wg) > 0:
+                        if len(D2_tail_background_sample) == 0:
+                            D2_tail_background_sample = D2_tail_background_wg
+                        print('Applying backgrounds of {0:.3f} and {1:.3f} '
+                              'cps to wg and sample 12CHD2 peaks, '
+                              'respectively'.format(
+                                  float(D2_tail_background_wg),
+                                  float(D2_tail_background_sample)))
+                        bgfs = [float(D2_tail_background_wg), float(D2_tail_background_sample)]
+ 
             
-            if bgDiff > bgThresh:
+            elif bgDiff > bgThresh:
                 print('Backgrounds on {0} are significantly different outside of '
                       'uncertainty \n std: '
                       '{1:.3f}, sa: {2:.3f}, pm {3:.3f}'.format(
@@ -265,14 +280,13 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             else:
                 # otherwise, apply the same to both
                 bgfs = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
-            
-            # add bgs to list
-            bgsUsed[thisPeak] = bgfs
 
             dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
                 dr['is_sample']==False,thisPeak + '_raw'] - bgfs[0]
             dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
                 dr['is_sample']==True,thisPeak + '_raw'] - bgfs[1]
+
+    
             # if a frag df, apply to here, too
             if 'frag' in blockIDs:
                 # use the frag + 1 background
@@ -280,12 +294,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                     dfrag['i15_raw'] = dfrag['i15'].copy()
                     dfrag.loc[dfrag['is_sample']==False,'i15'] -= bgfs[0]
                     dfrag.loc[dfrag['is_sample']==True,'i15'] -= bgfs[1]            
-            # if there's a sweep block, apply these bgs, too
-            if 'sweep' in blockIDs:
-                # assume sweep block is on the highest mass collector
-                if thisPeak == peakIDs_obs[-1]:
-                    dsweep['ReferenceCollector_raw'] = dsweep['ReferenceCollector'].copy()
-                    dsweep['ReferenceCollector'] -= bgfs[0]
+
             # then, compute ratio
             if thisPeak != basePeak:
                 thisR = 'R' + thisPeak.strip('i_') + '_unfiltered'
@@ -306,18 +315,12 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dr = filter_for_max_ratios(dr, peakIDs,
                                sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
     drm = calculate_deltas(dr, peakIDs)
-
     
     if 'frag' in blockIDs:
         k_factor = calculate_k_factor(dr, dfrag, plot_results=True)
-    # export sweep blocks for records
-    if 'sweep' in blockIDs:
-        export_sweep_block(dsweep)
+        np.savetxt('kfactor.txt', [k_factor])
+        
     return(dr, drm, file_name)
-
-def export_sweep_block(dsweep):
-    dsweep.to_excel('sweepScans.xlsx')
-    return
 
 def calculate_k_factor(dr, dfrag, plot_results=False):
     """
@@ -769,7 +772,7 @@ def parse_log_file(data_file):
     i_p_adjust = (d['Message'].str.contains(p_adjust_start) | d['Message'].str.contains(p_adjust_stop))
 
     i_peak_center = d['Message'].str.lower().str.contains(
-        'peak center') & ~d['Message'].str.startswith('Found more than one peak')
+        'peak center')
     i_pc = d.loc[(i_peak_center) & (d['Level'].isin(
         ['UserInfo', 'UserError'])),:].index
     i_pc_success = d.loc[(i_peak_center) & (d['Level'] == 'UserInfo'),:].index
@@ -849,12 +852,7 @@ for i in acq_name_list:
             colsToAlign = ['acq_number', 'cycle_number']
             drms[-1] = drms[-1].merge(peak_centers[colsToAdd + colsToAlign],
                                       how='left', on=colsToAlign)
-        # catch case where one or two coarse peak centers before main event, deal with this
-        elif len(peak_centers) - len(drms[-1]) < 3:
-            nExtra =  len(peak_centers) - len(drms[-1])
-            peak_centers = peak_centers[nExtra:]
-            for i, col in enumerate(colsToAdd):
-                drms[-1].insert(i+5, col, peak_centers[col].values)
+            
         else:
             try:
                 print('Data and peak centers are misaligned. Using only the first {0} rows of the peak center data'.format(len(drms[-1])))
