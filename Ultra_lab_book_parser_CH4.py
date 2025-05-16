@@ -231,7 +231,33 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             bgDiff = np.abs(dbg[thisPeak].mean()[1] - dbg[thisPeak].mean()[0])
             bgThresh = (3*dbg[thisPeak].std()/np.sqrt(dbg[thisPeak].count())).mean()
             
-            if bgDiff > bgThresh:
+            # 2.4 Special treatment just for D2 peak, which has a tailing corr
+            if '_dD2_' in d_data_file and thisPeak=='i18':
+                if input_tail_D2_background:
+                    try:
+                        print('Measured scattered ion background on 12CH2D2 is: '
+                              '{0:.3f} cps'.format(
+                                dbg['i18'].mean().mean()))
+                    except(UnboundLocalError):
+                        print('No background scans detected')
+                    D2_tail_background_wg = input(
+                        'Input total background for 12CH2D2 on WG \n '
+                        'or press ENTER to continue... ').strip()
+                    D2_tail_background_sample = input(
+                        'Input total background for 12CH2D2 on SAMPLE \n '
+                        'or press ENTER to continue... ').strip()                    
+                    if len(D2_tail_background_wg) > 0:
+                        if len(D2_tail_background_sample) == 0:
+                            D2_tail_background_sample = D2_tail_background_wg
+                        print('Applying backgrounds of {0:.3f} and {1:.3f} '
+                              'cps to wg and sample 12CHD2 peaks, '
+                              'respectively'.format(
+                                  float(D2_tail_background_wg),
+                                  float(D2_tail_background_sample)))
+                        bgfs = [float(D2_tail_background_wg), float(D2_tail_background_sample)]
+ 
+            
+            elif bgDiff > bgThresh:
                 print('Backgrounds on {0} are significantly different outside of '
                       'uncertainty \n std: '
                       '{1:.3f}, sa: {2:.3f}, pm {3:.3f}'.format(
@@ -299,11 +325,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     proportional_confidence_interval = np.sqrt(2)*erfinv(
         1.0 - 1.0/(integration_num*2.0))
     dr = filter_for_outliers(dr, peakIDs, sigma_filter=sigma_filter, basedOn='_stable')
-    # if db.size > 5:
-    #     dr = filter_for_max_ratios(dr, peakIDs,
-    #                                sigma_filter=proportional_confidence_interval*2,
-    #                                dbr=dbr)
-    # else:    
+  
     dr = filter_for_max_ratios(dr, peakIDs,
                                sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
     drm = calculate_deltas(dr, peakIDs)
@@ -311,6 +333,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     
     if 'frag' in blockIDs:
         k_factor = calculate_k_factor(dr, dfrag, plot_results=True)
+        np.savetxt('kfactor.txt', [k_factor])
     # export sweep blocks for records
     if 'sweep' in blockIDs:
         export_sweep_block(dsweep)
