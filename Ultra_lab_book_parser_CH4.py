@@ -31,18 +31,18 @@ def get_measurement_params(auto_detect=False, file_name=''):
         if '_dD_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 0.524, 120)
             peakIDs = ['i16', 'i17']
-            blockIDs = ['meas', 'frag', 'bg']
+            blockIDs = ['sweep', 'meas', 'frag', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif '_d13CD_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
             peakIDs = ['i16', 'i17', 'i18']
-            blockIDs = ['meas', 'bg']
+            blockIDs = ['sweep', 'meas', 'bg']
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif '_dD2_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
             peakIDs = ['i16', 'i17', 'i18']
-            blockIDs = ['meas', 'bg']
+            blockIDs = ['sweep', 'meas', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif 'D17O' in file_name: 
@@ -147,7 +147,8 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dn = pd.concat([dn, dn_extras], axis=1)
     peakIDs_obs = list(dn['peak'].unique())
     peakIDs_obs.remove(None)
-    basePeak = peakIDs_obs[0]
+    
+    
     dc = dn.loc[(dn[3]=='Y [cps]'), [1, 'block', 'meas', 'peak', 4]].copy()
     #rename columns to match legacy processer
     d = dc.rename(columns={1: 'measure_line', 4:'f'})
@@ -166,8 +167,23 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dp[peakIDs_cln] = dp[peakIDs_cln].astype(float)
     # apply block IDs
     dp['blockID'] = dp['block'].map(dict(zip(range(1, len(blockIDs)+1), blockIDs)))
+    # now, split things up
     db = dp.loc[dp['blockID']=='bg', :].copy()
     dr = dp.loc[dp['blockID'] == 'meas',:].copy()
+    if 'sweep' in blockIDs:
+        # extract sweep block
+        dsweep = dp.loc[dp['blockID'] == 'sweep',:].copy()
+        # remove sweep peaks from peak list
+        peakIDs_obs_full = peakIDs_obs[:]
+        peakIDs_obs = [i for i in peakIDs_obs_full if 'Collector' not in i]
+        peakIDs_cln = [i for i in peakIDs_cln if 'Collector' not in i]
+
+        # also drop these columns from dr, db, dseep
+        dr = dr.dropna(how='all', axis=1)
+        db = db.dropna(how='all', axis=1)
+        dsweep = dsweep.dropna(how='all', axis=1)
+    # now that clean, define basepeak 
+    basePeak = peakIDs_obs[0]
 
 
     
@@ -206,6 +222,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             prompt_for_backgrounds = True
 
         # 2.1 apply backgrounds
+        bgsUsed = {}
         for thisPeak in peakIDs:
             dr[thisPeak + '_raw'] = dr[thisPeak].copy()
             # apply bgs
@@ -248,6 +265,9 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             else:
                 # otherwise, apply the same to both
                 bgfs = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
+            
+            # add bgs to list
+            bgsUsed[thisPeak] = bgfs
 
             dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
                 dr['is_sample']==False,thisPeak + '_raw'] - bgfs[0]
@@ -260,7 +280,12 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                     dfrag['i15_raw'] = dfrag['i15'].copy()
                     dfrag.loc[dfrag['is_sample']==False,'i15'] -= bgfs[0]
                     dfrag.loc[dfrag['is_sample']==True,'i15'] -= bgfs[1]            
-
+            # if there's a sweep block, apply these bgs, too
+            if 'sweep' in blockIDs:
+                # assume sweep block is on the highest mass collector
+                if thisPeak == peakIDs_obs[-1]:
+                    dsweep['ReferenceCollector_raw'] = dsweep['ReferenceCollector'].copy()
+                    dsweep['ReferenceCollector'] -= bgfs[0]
             # then, compute ratio
             if thisPeak != basePeak:
                 thisR = 'R' + thisPeak.strip('i_') + '_unfiltered'
@@ -281,10 +306,18 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     dr = filter_for_max_ratios(dr, peakIDs,
                                sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
     drm = calculate_deltas(dr, peakIDs)
+
     
     if 'frag' in blockIDs:
         k_factor = calculate_k_factor(dr, dfrag, plot_results=True)
+    # export sweep blocks for records
+    if 'sweep' in blockIDs:
+        export_sweep_block(dsweep)
     return(dr, drm, file_name)
+
+def export_sweep_block(dsweep):
+    dsweep.to_excel('sweepScans.xlsx')
+    return
 
 def calculate_k_factor(dr, dfrag, plot_results=False):
     """
@@ -736,7 +769,7 @@ def parse_log_file(data_file):
     i_p_adjust = (d['Message'].str.contains(p_adjust_start) | d['Message'].str.contains(p_adjust_stop))
 
     i_peak_center = d['Message'].str.lower().str.contains(
-        'peak center')
+        'peak center') & ~d['Message'].str.startswith('Found more than one peak')
     i_pc = d.loc[(i_peak_center) & (d['Level'].isin(
         ['UserInfo', 'UserError'])),:].index
     i_pc_success = d.loc[(i_peak_center) & (d['Level'] == 'UserInfo'),:].index
@@ -816,7 +849,12 @@ for i in acq_name_list:
             colsToAlign = ['acq_number', 'cycle_number']
             drms[-1] = drms[-1].merge(peak_centers[colsToAdd + colsToAlign],
                                       how='left', on=colsToAlign)
-            
+        # catch case where one or two coarse peak centers before main event, deal with this
+        elif len(peak_centers) - len(drms[-1]) < 3:
+            nExtra =  len(peak_centers) - len(drms[-1])
+            peak_centers = peak_centers[nExtra:]
+            for i, col in enumerate(colsToAdd):
+                drms[-1].insert(i+5, col, peak_centers[col].values)
         else:
             try:
                 print('Data and peak centers are misaligned. Using only the first {0} rows of the peak center data'.format(len(drms[-1])))
