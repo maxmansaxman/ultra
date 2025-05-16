@@ -1,3 +1,4 @@
+
 """
 Processing script Qtegra export files of methyl group measurements
 
@@ -881,6 +882,3 @@ dr_all.reset_index(drop=False, inplace=True)
 drm_all.reset_index(drop=True, inplace=True)
 dr_all.to_excel('d_data_all.xlsx', freeze_panes=(1,0), header=True)
 drm_all.to_excel('d_data_all_summary.xlsx', freeze_panes=(1,0), header=True)
-
-
-
