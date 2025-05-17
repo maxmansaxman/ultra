@@ -28,19 +28,19 @@ def FMCI_r_to_c(rD,r13):
 
     return(c12CH4, c12CH3D, c13CH4, c13CH3D, c12CH2D2)
 
-def CH34_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan):
+def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan):
     ''' Solves the linear equations to accurately calculate
     the bulk composition of d13C and d18O. '''
     r13C_vpdb = 0.0112372 # craig (1957)
 
     rD_vsmow = 0.00015576
     # # Define wg values
-    d13C_ref_dict = {'CIT_2': -67.79, 'BIL_1': -68.49, 'CIT_CH3Cl_2': -51.53}
+    d13C_ref_dict = {'CIT_2': -67.79, 'BIL_1': -68.49, 'CIT_CH3Cl_2': -51.53, 'GTS-1': -40}
     d13C_ref = d13C_ref_dict[ref_gas_ID]
     # # d13_wg_se = 0.05 # True measured error, but this is a constant
-    dD_ref_dict = {'CIT_2': -113.6, 'BIL_1': -111.5, 'CIT_CH3Cl_2': -111.2}
+    dD_ref_dict = {'CIT_2': -113.6, 'BIL_1': -111.5, 'CIT_CH3Cl_2': -111.2, 'GTS-1': -150}
     dD_ref = dD_ref_dict[ref_gas_ID]
-    frag_rate_dict = {'CIT_2': 0.15, 'BIL_1': 0.15, 'CIT_CH3Cl_2': 0.07}
+    frag_rate_dict = {'CIT_2': 0.15, 'BIL_1': 0.15, 'CIT_CH3Cl_2': 0.07, 'GTS-1':0.7}
     frag_rate = frag_rate_dict[ref_gas_ID]
     # # Calculate wg ratios and errors
     r13C_ref = (d13C_ref/1000 + 1)*r13C_vpdb
@@ -58,13 +58,13 @@ def CH34_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan):
     # now, calculate for sample side
     mD_sa = (dD_wg/1000 + 1)*4*rD_ref/(1 + frag_rate*3*rD_ref)
     rD_sa = mD_sa/(4 - frag_rate*3*mD_sa)
-    r13C_sa = ((d13C_wg/1000 + 1)*r13C_ref/(1 + frag_rate*2*rD_ref))*(1 + frag_rate*2*rD_sa)
+    r13C_sa = ((d13C_wg/1000 + 1)*r13C_ref/(1 + frag_rate*(0 + 3*rD_ref))*(1 + frag_rate*3*rD_sa))
 
-    r13CD_sa = ((d13CD_wg/1000 + 1)*r13CD_ref/(1 + frag_rate*2*rD_ref))*(1 + frag_rate*2*rD_sa)
-    rD2_sa = ((dD2_wg/1000 +1)*rD2_ref/(1 + frag_rate*2*rD_ref))*(1 + frag_rate*2*rD_sa)
+    r13CD_sa = ((d13CD_wg/1000 + 1)*r13CD_ref/(1 + frag_rate*3*rD_ref))*(1 + frag_rate*3*rD_sa)
+    rD2_sa = ((dD2_wg/1000 +1)*rD2_ref/(1 + frag_rate*3*rD_ref))*(1 + frag_rate*3*rD_sa)
 
-    D13CD_wg = (r13CD_sa/(3*r13C_sa*rD_sa)-1)*1000
-    DD2_wg = (rD2_sa/(3*rD_sa*rD_sa)-1)*1000
+    D13CD_wg = (r13CD_sa/(4*r13C_sa*rD_sa)-1)*1000
+    DD2_wg = (rD2_sa/(6*rD_sa*rD_sa)-1)*1000
 
     dD_vsmow = (rD_sa/rD_vsmow-1)*1000
     d13C_vpdb = (r13C_sa/r13C_vpdb-1)*1000
@@ -75,16 +75,15 @@ def calculate_randoms(row, mean, std_dev):
     return(row['seed'].gauss(mean, std_dev))
 
 
-def CH3F_bulk_comp_by_row(row):
-    [dD_vsmow, d13C_vpdb, D13CD_wg] = CH3F_bulk_comp(row['ref gas ID'], row.dD_wg, row.d13C_wg, row.d13CD_wg)
+def CH4_bulk_comp_by_row(row):
+    [dD_vsmow, d13C_vpdb, D13CD_wg] = CH4_bulk_comp(row['ref gas ID'], row.dD_wg, row.d13C_wg, row.d13CD_wg)
     row['dD_vsmow'] = dD_vsmow
     row['d13C_vpdb'] = d13C_vpdb
     row['D13CD_wg'] = D13CD_wg
     return(row)
 
 if __name__ == '__main__':
-    d = pd.read_excel('C:/Users/Administrator/Desktop/Data/summary_sheets/'
-                      'fluoromethane_summary_sheet.xlsx',
+    d = pd.read_excel('methane_summary_sheet.xlsx',
                       header=[0,1], index_col=0)
 
     # get indices of samples that are unprocessed
@@ -101,7 +100,7 @@ if __name__ == '__main__':
         print('No columns to process. Goodbye! ')
     else:
         print('Processing rows: {0}'.format([j for j in i_to_process]))
-        N = int(1e6)
+        N = int(1e4)
         dmc = pd.DataFrame(data = {'i': np.arange(N), 'seed': [random.SystemRandom() for j in range(N)]})
         cols_to_make = ['dD_vsmow', 'd13C_vpdb', 'D13CD_wg', 'DD2_wg']
         for i in i_to_process:
@@ -119,7 +118,7 @@ if __name__ == '__main__':
             dmc['dD2_wg'] = dmc.apply(calculate_randoms, axis=1,
                                       args=(d.loc[i,'dD2']['mean vs. wg'],
                                             d.loc[i,'dD2']['std error']))
-            results = CH3F_bulk_comp(ref_gas_ID, dmc['dD_wg'],
+            results = CH4_bulk_comp(ref_gas_ID, dmc['dD_wg'],
                                      dmc['d13C_wg'],
                                      d13CD_wg=dmc['d13CD_wg'],
                                      dD2_wg=dmc['dD2_wg'])
@@ -135,8 +134,7 @@ if __name__ == '__main__':
         while True:
             try:
                 d.loc[:,(['Info', 'Calculated data'])].to_excel(
-                    'C:/Users/Administrator/Desktop/Data/summary_sheets/'
-                    'fluoromethane_summary_sheet_calc.xlsx')
+                    'methane_summary_sheet_calc.xlsx')
                 break
             except(PermissionError):
                 is_it_closed = input('Could not write to spreadsheet '
