@@ -209,7 +209,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
         try:
             dbr = sort_by_cycles(db, integration_num)
             dbr['is_outlier'] = False
-            bgs = compare_sample_and_std_bgs(dbr, peakIDs_cln)
+            bgs = compare_sample_and_std_bgs(dbr, peakIDs)
             dbg = bgs.reset_index().groupby('is_sample')
 
         except(KeyError):
@@ -879,6 +879,12 @@ for i in acq_name_list:
             peak_centers = peak_centers[nExtra:]
             for i, col in enumerate(colsToAdd):
                 drms[-1].insert(i+5, col, peak_centers[col].values)
+        # in the case of dD, there's an extra one after the frag
+        elif len(peak_centers) - len(drms[-1]) == 3:
+            peak_centers = peak_centers[2:-1]
+            for i, col in enumerate(colsToAdd):
+                drms[-1].insert(i+5, col, peak_centers[col].values)
+        
         else:
             try:
                 print('Data and peak centers are misaligned. Using only the first {0} rows of the peak center data'.format(len(drms[-1])))
