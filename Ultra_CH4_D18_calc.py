@@ -9,6 +9,7 @@ Created on Sat Jul 14 12:53:59 2018
 import numpy as np
 import pandas as pd
 import random
+import os
 
 
 def FMCI_r_to_c(rD,r13):
@@ -28,41 +29,50 @@ def FMCI_r_to_c(rD,r13):
 
     return(c12CH4, c12CH3D, c13CH4, c13CH3D, c12CH2D2)
 
-def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan):
+def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan, frag_rate=0.79):
     ''' Solves the linear equations to accurately calculate
     the bulk composition of d13C and d18O. '''
     r13C_vpdb = 0.0112372 # craig (1957)
 
     rD_vsmow = 0.00015576
     # # Define wg values
-    d13C_ref_dict = {'CIT_2': -67.79, 'BIL_1': -68.49, 'CIT_CH3Cl_2': -51.53, 'GTS-1': -40}
+    d13C_ref_dict = {'GTS-1': -40}
     d13C_ref = d13C_ref_dict[ref_gas_ID]
     # # d13_wg_se = 0.05 # True measured error, but this is a constant
-    dD_ref_dict = {'CIT_2': -113.6, 'BIL_1': -111.5, 'CIT_CH3Cl_2': -111.2, 'GTS-1': -150}
+    dD_ref_dict = {'GTS-1': -150}
     dD_ref = dD_ref_dict[ref_gas_ID]
-    frag_rate_dict = {'CIT_2': 0.15, 'BIL_1': 0.15, 'CIT_CH3Cl_2': 0.07, 'GTS-1':0.7}
-    frag_rate = frag_rate_dict[ref_gas_ID]
+    # frag_rate_dict = {'CIT_2': 0.15, 'BIL_1': 0.15, 'CIT_CH3Cl_2': 0.07, 'GTS-1':0.7}
+    # frag_rate = frag_rate_dict[ref_gas_ID]
     # # Calculate wg ratios and errors
     r13C_ref = (d13C_ref/1000 + 1)*r13C_vpdb
     rD_ref = (dD_ref/1000 + 1)*rD_vsmow
     # calculate concentrations of ref gas
-    # assume ref gas is stochastic
-    D13CD_ref = 0.0
+    m12CH3D_sa = (dD_wg/1000 + 1)*rD_ref*4/(1 + frag_rate*3*rD_ref)
+    rD_sa = m12CH3D_sa/(4 - 3*m12CH3D_sa*frag_rate)
+    
+    m13CH4_sa = (d13C_wg/1000 + 1)*r13C_ref/(1+frag_rate*(r13C_ref + 3*rD_ref))
+    r13C_sa = m13CH4_sa*(1 + 3*frag_rate*rD_sa)/(1 - m13CH4_sa*frag_rate)
+
+    
+    #wg clumped compositions from Eldridge et al. 2019 ACS Earth Space Chem.
+    # D13CD_ref = 2.5884
+    D13CD_ref = 0
     r13CD_ref_stoch = 4*r13C_ref*rD_ref
     r13CD_ref = (D13CD_ref/1000 + 1)*r13CD_ref_stoch
 
-    DD2_ref = 0.0
+    # DD2_ref = 5.8600
+    DD2_ref = 0
     rD2_ref_stoch = 6*rD_ref*rD_ref
     rD2_ref = (DD2_ref/1000 + 1)*rD2_ref_stoch
 
-    # now, calculate for sample side
-    mD_sa = (dD_wg/1000 + 1)*4*rD_ref/(1 + frag_rate*3*rD_ref)
-    rD_sa = mD_sa/(4 - frag_rate*3*mD_sa)
-    r13C_sa = ((d13C_wg/1000 + 1)*r13C_ref/(1 + frag_rate*(0 + 3*rD_ref))*(1 + frag_rate*3*rD_sa))
+    # # now, calculate for sample side
+    # mD_sa = (dD_wg/1000 + 1)*4*rD_ref/(1 + frag_rate*3*rD_ref)
+    # rD_sa = mD_sa/(4 - frag_rate*3*mD_sa)
+    # r13C_sa = ((d13C_wg/1000 + 1)*r13C_ref/(1 + frag_rate*(0 + 3*rD_ref))*(1 + frag_rate*3*rD_sa))
 
-    r13CD_sa = ((d13CD_wg/1000 + 1)*r13CD_ref/(1 + frag_rate*3*rD_ref))*(1 + frag_rate*3*rD_sa)
-    rD2_sa = ((dD2_wg/1000 +1)*rD2_ref/(1 + frag_rate*3*rD_ref))*(1 + frag_rate*3*rD_sa)
-
+    r13CD_sa = ((d13CD_wg/1000 +1)*r13CD_ref/(1+frag_rate*(r13C_ref + 3*rD_ref)))*(1 + frag_rate*(r13C_sa + 3*rD_sa))
+    rD2_sa = ((dD2_wg/1000 +1)*rD2_ref/(1+frag_rate*(r13C_ref + 3*rD_ref)))*(1 + frag_rate*(r13C_sa + 3*rD_sa))
+    
     D13CD_wg = (r13CD_sa/(4*r13C_sa*rD_sa)-1)*1000
     DD2_wg = (rD2_sa/(6*rD_sa*rD_sa)-1)*1000
 
@@ -83,6 +93,9 @@ def CH4_bulk_comp_by_row(row):
     return(row)
 
 if __name__ == '__main__':
+    # change to correct location
+    summaryPath = '/Users/Thermo/Documents/Ultra/Data/CH4'
+    os.chdir(summaryPath)
     d = pd.read_excel('methane_summary_sheet.xlsx',
                       header=[0,1], index_col=0)
 
@@ -118,10 +131,20 @@ if __name__ == '__main__':
             dmc['dD2_wg'] = dmc.apply(calculate_randoms, axis=1,
                                       args=(d.loc[i,'dD2']['mean vs. wg'],
                                             d.loc[i,'dD2']['std error']))
+            
+            if d.loc[i,'dD']['frag rate'] > -1:
+                frag_rate = d.loc[i,'dD']['frag rate']
+            else:
+                frag_rate = 0.79
+            # catch case where dD not measured
+            # needed so we can still do d13C meas with frag
+            # if dmc['dD_wg'].isnull().prod() == True:
+            #     dmc['dD_wg'] = 0
             results = CH4_bulk_comp(ref_gas_ID, dmc['dD_wg'],
                                      dmc['d13C_wg'],
                                      d13CD_wg=dmc['d13CD_wg'],
-                                     dD2_wg=dmc['dD2_wg'])
+                                     dD2_wg=dmc['dD2_wg'],
+                                     frag_rate=frag_rate)
             d.loc[i,('Calculated data', cols_to_make)] = results[cols_to_make].mean().round(3).values
             d.loc[i,('Calculated data', ['dD_std_error',
                                          'd13C_std_error',

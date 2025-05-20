@@ -547,10 +547,38 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                         # correct for scattered ion bg
                         print('Measured scattered ion background on 12CH2D2 is: '
                               '{0:.3f} cps'.format(
-                                dbg['i18'].mean().mean()))
+                                dbg[thisPeak].mean().mean()))
+                        if bgDiff > bgThresh:
+                            print('Scattered ion bgs on {0} are significantly different outside of '
+                                  'uncertainty \n std: '
+                                  '{1:.3f}, sa: {2:.3f}, pm {3:.3f}'.format(
+                                      thisPeak,
+                                      dbg[thisPeak].mean()[0],
+                                      dbg[thisPeak].mean()[1],
+                                      (2*dbg[thisPeak].std()/np.sqrt(dbg[thisPeak].count())).mean()))
+                            bckgrnd_choice = input('Apply (s)ame, (d)ifferent, '
+                                                    'or (c)ustom scatted ion background corrections? ').lower()
+                            if bckgrnd_choice == 'd':
+                                bgscat = [dbg[thisPeak].mean()[0], dbg[thisPeak].mean()[1]]
+               
+                            elif bckgrnd_choice == 'c':
+                                manual_background_std = input(
+                                    'Input a scattered ion background value for peak {0} on wg'.format(
+                                        thisPeak)).strip()
+                                manual_background_sa = input(
+                                    'Input a scattered ion background value for peak {0} on wg'.format(
+                                        thisPeak)).strip()
+                                if len(manual_background_std) > 0:
+                                    bgscat = [float(manual_background_std), float(manual_background_sa)]
+                            else:
+                                # otherwise, apply the same to both
+                                bgscat = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
+                        else:
+                            # otherwise, apply the same to both
+                            bgscat = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
                         dsf['ReferenceCollector_raw'] = dsf['ReferenceCollector'].copy()
                         dsf['MasterCollector_raw'] = dsf['MasterCollector'].copy()
-                        dsf['ReferenceCollector'] -= dbg['i18'].mean().mean()
+                        dsf['ReferenceCollector'] -= bgscat[0]
                         dsf['MasterCollector'] -= dbg['i16'].mean().mean()
 
                     except(UnboundLocalError):
@@ -570,7 +598,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                              '12CH4D_slope': fits[0,1,:],
                              '12CH4D_int': fits[1,1,:],
                              '12CH4D_tail': [tails['tailing_12CH4D'], tails['tailing_12CH4D']] }
-                    bgfs = {'fits': fits, 'tails': tails.values}
+                    bgfs = {'fits': fits, 'tails': tails.values, 'scattered':  bgscat}
                     
                 
                 if input_tail_D2_background:
@@ -638,13 +666,18 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             if makeAdductLine:
                 fits = bgfs['fits']
                 tails = bgfs['tails']
+                bgscat = bgfs['scattered']
                 dr[thisPeak+'_adductbg'] = np.nan
-                for isSample in [0,1]:                                
+                dr[thisPeak+'_scatbg'] = np.nan
+
+                for isSample in [0,1]: 
+                    dr.loc[dr['is_sample']==isSample, thisPeak+'_scatbg'] = bgscat[isSample]                               
                     dr.loc[dr['is_sample']==isSample, thisPeak+'_adductbg'] = (
                         (dr.loc[dr['is_sample']==isSample, 'i16'].values[:,np.newaxis]*fits[
                             0,:,isSample]+ fits[1,:,isSample])*dr.loc[dr['is_sample']==isSample, 'i16'].values[
                                 :,np.newaxis]*tails).sum(axis=1)
-                dr[thisPeak] = dr[thisPeak + '_raw'] -  dr[thisPeak + '_adductbg']
+                                
+                dr[thisPeak] = dr[thisPeak + '_raw'] -  dr[thisPeak + '_adductbg'] -  dr[thisPeak + '_scatbg']
                 makeAdductLine=False
             else:  
                 for isSample in [0,1]:                                
