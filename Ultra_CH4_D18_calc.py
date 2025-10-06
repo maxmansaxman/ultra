@@ -36,10 +36,10 @@ def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan, fr
 
     rD_vsmow = 0.00015576
     # # Define wg values
-    d13C_ref_dict = {'GTS-1': -40}
+    d13C_ref_dict = {'GTS-1': -34.14}
     d13C_ref = d13C_ref_dict[ref_gas_ID]
     # # d13_wg_se = 0.05 # True measured error, but this is a constant
-    dD_ref_dict = {'GTS-1': -150}
+    dD_ref_dict = {'GTS-1': -169.5}
     dD_ref = dD_ref_dict[ref_gas_ID]
     # frag_rate_dict = {'CIT_2': 0.15, 'BIL_1': 0.15, 'CIT_CH3Cl_2': 0.07, 'GTS-1':0.7}
     # frag_rate = frag_rate_dict[ref_gas_ID]
@@ -113,7 +113,7 @@ if __name__ == '__main__':
         print('No columns to process. Goodbye! ')
     else:
         print('Processing rows: {0}'.format([j for j in i_to_process]))
-        N = int(1e4)
+        N = int(1e6)
         dmc = pd.DataFrame(data = {'i': np.arange(N), 'seed': [random.SystemRandom() for j in range(N)]})
         cols_to_make = ['dD_vsmow', 'd13C_vpdb', 'D13CD_wg', 'DD2_wg']
         for i in i_to_process:
