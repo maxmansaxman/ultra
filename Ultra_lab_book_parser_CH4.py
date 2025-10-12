@@ -19,8 +19,15 @@ import pandas as pd
 import os
 from scipy.special import erf, erfinv
 import statsmodels.api as sm
-# plt.style.use('ggplot')
+from scipy.interpolate import interp1d, UnivariateSpline, LSQUnivariateSpline
+from scipy.optimize import minimize, least_squares
+
+import re
+import datetime
 plt.close('all')
+
+homeDir = os.getcwd()
+
 
 def get_measurement_params(auto_detect=False, file_name=''):
     ''' Retreives three key measurement parameters (number of cylces,
@@ -43,7 +50,7 @@ def get_measurement_params(auto_detect=False, file_name=''):
         elif '_dD2_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
             peakIDs = ['i16', 'i17', 'i18']
-            blockIDs = ['sweep', 'meas', 'bg']
+            blockIDs = ['meas', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
         elif 'D17O' in file_name: 
@@ -83,6 +90,277 @@ def get_measurement_params(auto_detect=False, file_name=''):
         except ValueError:
             print('Not a valid peak ID')
     return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+
+
+def import_scans_stich_masses(fileName):
+    # attempt to treat as a newer style export that is readable with pyarrow
+    dn = pd.read_csv(fileName, sep=';', engine='pyarrow')
+    print('Valid file, now calculating...')
+    dn.columns = range(len(dn.columns))
+    # split and append blocks, meas, and peak IDs
+    dn_extras = dn[2].str.split(':', expand=True)
+    dn_extras.columns = ['block', 'meas', 'peak']
+    dn = pd.concat([dn, dn_extras], axis=1)
+    peakIDs_obs = list(dn['peak'].unique())
+    peakIDs_obs.remove(None)
+    dc = dn.loc[(dn[3]=='Y [cps]'), [1, 'block', 'meas', 'peak', 4]].copy()
+    # make simpler version, merge master and reference blocks
+    dfs =  []
+    for peak in dc['peak'].unique():
+        dfs.append(dc.loc[(dc['peak']==peak), [1, 'block', 'meas', 4]].copy())
+        dfs[-1].rename(columns={1:'i', 4: peak}, inplace=True)
+        dfs[-1] = dfs[-1].astype({'i':int, 'block':int, 'meas':int, peak:float})
+    ds = pd.merge(*dfs, how='outer', on=['i', 'block', 'meas'])
+    while True:
+        
+        if 'adduct' in fileName:
+            fileDateStr = re.findall('[0-9]{1,2}-[0-9]{1,2}-[0-9]{2}', fileName)[0]
+            fileDate = datetime.datetime.strptime(fileDateStr, '%m-%d-%y')
+            if fileDate < datetime.datetime(2025, 5, 16):
+                CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v1.xlsx'
+            else:
+                CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v2.xlsx'
+            break
+        else:
+            print('Cannot identify file date')
+            print('Ensure date is in file name (m-d-yy)')
+            input("Press ENTER to continue... ")
+    
+    cTemplate = pd.read_excel(CH4TemplatePath)
+    # merge everything except the intensities
+    colsToAdd = cTemplate.columns[~cTemplate.columns.str.contains('(cps)', regex=False)]
+    dsf = ds.merge(cTemplate.loc[:, colsToAdd], how='inner', on=['i', 'block'])
+    # save
+    dsf.to_excel('{0}_processed_all.xlsx'.format(fileName))       
+    return(dsf)
+
+
+def peak_shape_model(mass, peak_center, amplitude, sigma, cup_width=0.00048):
+    ''' model of a narrow peak suing the difference between two erfs'''
+    intensity = amplitude/2*(erf((mass - peak_center + cup_width)/sigma)
+                             - erf((mass - peak_center - cup_width)/sigma))
+    return(intensity)
+
+def four_peak_model(mass, center_13CD, amplitude_13CD, amplitude_13C_adduct,
+                     amplitude_D2, amplitude_D_adduct,
+                     sigma, cup_width):
+    intensity = peak_shape_model(mass, center_13CD, amplitude_13CD, sigma,
+                                 cup_width=cup_width) \
+                + peak_shape_model(mass, center_13CD + 0.00155,
+                                   amplitude_13C_adduct, sigma, cup_width=cup_width) \
+                + peak_shape_model(mass, center_13CD + 0.00292,
+                                   amplitude_D2, sigma,
+                                   cup_width=cup_width) \
+                + peak_shape_model(mass, center_13CD + 0.00447,
+                                   amplitude_D_adduct, sigma,
+                                   cup_width=cup_width)
+    return(intensity)
+
+
+def one_peak_minimizer(p, *extra_args):
+    masses, signal = extra_args
+    model = peak_shape_model(masses, p[0], p[1],
+                             p[2], p[3])
+    misfit = np.abs(model - signal)
+    # misfit = (model - signal)**2
+
+    return(np.sum(misfit))
+
+
+def four_peak_minimizer(p, *extra_args):
+    masses, signal, sigma, cup_width = extra_args
+    model = four_peak_model(masses, p[0], p[1], p[2], p[3], p[4],
+                            sigma, cup_width)
+    misfit = np.abs(model - signal)
+    return(np.sum(misfit))
+
+
+def compute_resolution(hrdf):
+    peakMax = hrdf['H4_model'].max()
+    resEval = {}
+    resEval['pts'] = np.array([0.05, 0.95])
+    resEval['signal'] = resEval['pts']*peakMax
+    for i, pt in enumerate(resEval['pts']):
+        signal = pt*peakMax
+        for k in ['model', 'interp']:
+            theseMasses = hrdf.loc[hrdf['H4_' + k] > signal, 'Mass'].values[[0,-1]]
+            key = '{0}_{1}'.format(k, pt)
+            resEval[key] = theseMasses
+    redf = pd.DataFrame(data=resEval)
+    modelRes = (18.01/(redf['model_0.05'] - redf['model_0.95'])).abs().mean()
+    interpRes = (18.01/(redf['interp_0.05'] - redf['interp_0.95'])).abs().mean()
+    print('ERF model resolution: {0:.0f}'.format(modelRes))
+    print('Interpolated resolution: {0:.0f}'.format(interpRes))
+    return(modelRes, interpRes)
+
+
+
+def fit_H2O_peaks(dh):
+    fig, ax = plt.subplots()
+    H2OResults = {}
+    toAdd = ['integration', 'center', 'height', 'sigma', 'cup_width',
+             'tailing_13CH5', 'tailing_12CH4D', 'resolution_erf', 'resolution_interp']
+    for key in toAdd:
+        H2OResults[key] = []
+    cupWidth = 0.000455
+    sigmaGuess = 0.0004
+    # note that techincally second Eval should be negative,
+    # but interference from DO prevents doing this accurately
+    evalPoints = np.array([0.00137, 0.00155])
+    cutoff = 0.0001
+    massScaleConversion = 18.0106/18.0439
+    dh['Mass'] = dh['Mass ReferenceCollector (u)']
+    # dh['Mass_H4'] = dh['Mass_center']/massScaleConversion
+    dh['Signal'] = dh['ReferenceCollector']
+    dh['Model'] = np.nan
+    dh['Signal_normed'] = np.nan
+    dh['Model_normed'] = np.nan
+    dh['Mass_precise'] = np.nan
+
+    for thisInt in dh['Integration'].unique():
+        
+        massRange = dh.loc[dh['Integration']==thisInt, 'Mass'].values
+        dh.loc[dh['Integration']==thisInt, 'Mass_precise'] = np.linspace(massRange[0], massRange[-1],
+                                                                                num=len(massRange))
+        thisDh = dh.loc[dh['Integration']==thisInt]
+        # deal with imprecise mass window
+        
+        # now, fit and plot the OH peak
+        extraArgs = (thisDh['Mass_precise'].values,
+                     thisDh['Signal'].values)
+        paramsGuess = np.array([thisDh.loc[thisDh['Signal'].idxmax(), 'Mass_precise'],
+                                 thisDh['Signal'].max(), sigmaGuess,
+                                 cupWidth])
+        res = minimize(one_peak_minimizer, paramsGuess, args=extraArgs)
+        center, height, sigma, cupWidth = res.x
+        dh.loc[dh['Integration']==thisInt, 'Model'] = peak_shape_model(
+                dh.loc[dh['Integration']==thisInt, 'Mass_precise'], center, height,
+                sigma, cupWidth)
+        
+        dh.loc[dh['Integration']==thisInt, 'Signal_normed'] = dh.loc[dh['Integration']==thisInt, 'Signal']/height
+        dh.loc[dh['Integration']==thisInt, 'Model_normed'] = dh.loc[dh['Integration']==thisInt, 'Model']/height
+        
+        H2OResults['integration'].append(thisInt)
+        H2OResults['center'].append(center)
+        H2OResults['height'].append(height)
+        H2OResults['sigma'].append(sigma)
+        H2OResults['cup_width'].append(cupWidth)
+        
+        thisInterp = UnivariateSpline(extraArgs[0], extraArgs[1], s=300)
+        theseEvalPoints = center + evalPoints*massScaleConversion
+        cpsObs =np.array([thisDh.loc[(thisDh['Mass_precise'] - theseEvalPoints[0]).abs() < cutoff, 'Signal'].mean(),
+                          thisDh.loc[(thisDh['Mass_precise'] - theseEvalPoints[1]).abs() < cutoff, 'Signal'].mean()])
+        tailingFactors = cpsObs/height
+        
+        H2OResults['tailing_13CH5'].append(tailingFactors[0])
+        H2OResults['tailing_12CH4D'].append(tailingFactors[1])
+        
+        hrMasses = np.linspace(massRange[0], massRange[-1], num=1000)
+        hrH2O =  peak_shape_model(hrMasses, res.x[0], res.x[1], res.x[2], res.x[3])
+        hrdf = pd.DataFrame(data={'Mass_center': hrMasses,
+                                          'H4_model': hrH2O})
+        hrdf['Mass'] = hrdf['Mass_center']
+        hrdf['H4_interp'] = thisInterp(hrdf['Mass_center'])
+
+        modelRes, interpRes = compute_resolution(hrdf)
+        H2OResults['resolution_erf'].append(modelRes)
+        H2OResults['resolution_interp'].append(interpRes)
+
+    for thisInt in dh['Integration'].unique():
+        thisDh = dh.loc[dh['Integration']==thisInt]
+        
+        ax.plot('Mass_precise', 'Signal', '.', color='C{0}'.format(thisInt), data=thisDh)
+        ax.plot('Mass_precise', 'Model', '-', color='C{0}'.format(thisInt), data=thisDh)
+        
+    
+    h2r = pd.DataFrame(data=H2OResults)        
+    ax.text(0.98,0.98,'M/∆M erf: {0:,.0f}\n interp: {1:,.0f}\n\n 13CH5 tail: {2:.2e}'.format(
+        h2r['resolution_erf'].mean(),
+        h2r['resolution_interp'].mean(),
+        h2r['tailing_13CH5'].mean()),
+            transform=ax.transAxes, ha='right', va='top')
+
+    
+    ylims = ax.get_ylim()
+    ax.set_yscale('log')
+    ax.set_ylim(bottom=0.1, top=ylims[1])
+    ax.set_xlabel('Mass (Da)')
+    ax.set_ylabel('Intensity (cps)')
+    fig.savefig('H2O_scans.pdf')
+
+    return(h2r)
+
+def loop_and_make_adduct_line(da, h2r):
+    
+    cupWidth = h2r['cup_width'].mean()
+    sigma = h2r['sigma'].mean()
+    
+    fig, ax = plt.subplots(nrows=2, ncols=2, figsize=(9,7))
+    ax = ax.ravel()
+    fits = np.zeros((2,2,2))
+    adf = {}
+    toAdd = ['measure', 'center', 'i_16', 'i_13CH3D', 'i_13CH5', 'i_12CH4D','is_sample']
+    for key in toAdd:
+        adf[key] = []
+    for meas in da['Measure'].unique():
+        thisDa = da.loc[da['Measure']==meas, :]
+        adf['i_16'].append(thisDa['MasterCollector'].median())
+        massRange = thisDa['Mass ReferenceCollector (u)'].values
+        massPrecise = np.linspace(massRange[0], massRange[-1], num=len(massRange))
+        signal = thisDa['ReferenceCollector'].values
+        signalMax = np.max(signal)
+        # now, fit and plot the OH peak
+        extraArgs = (massPrecise,
+                     signal, h2r['sigma'].mean(), h2r['cup_width'].mean())
+        paramsGuess = np.array([massPrecise[np.argmax(signal)],
+                                signalMax, signalMax/2, 100, signalMax/30])
+        res = minimize(four_peak_minimizer, paramsGuess, args=extraArgs)
+        adf['center'].append(res.x[0])       
+        adf['i_13CH3D'].append(res.x[1])       
+        adf['i_13CH5'].append(res.x[2])
+        adf['i_12CH4D'].append(res.x[4])   
+        isSample = (meas + 1)%2
+        adf['is_sample'].append(bool(isSample))
+        adf['measure'].append(meas)
+
+        ax[0].plot(massPrecise, signal, '.', alpha=0.3, color='C{0}'.format(isSample))
+        modelPred = four_peak_model(massPrecise, res.x[0], res.x[1],
+                                    res.x[2], res.x[3], res.x[4], sigma, cupWidth)
+        ax[0].plot(massPrecise, modelPred, '-', alpha=0.3,color='C{0}'.format(isSample))
+    
+    ax[0].set_xlabel('H4 mass (Da)')
+    ax[0].set_ylabel('intensity (cps)')
+    adf = pd.DataFrame(data=adf)
+    forRatio  = adf.columns[adf.columns.str.contains('i_1[2,3]')]
+    for i, thisCol in enumerate(forRatio):
+        species = thisCol.split('_')[-1]
+        ratio = 'R_{0}'.format(species)
+        adf[ratio] = adf[thisCol]/adf['i_16']
+    
+        for cond in [0, 1]:
+            tadf = adf.loc[adf['is_sample']==cond, :]
+
+            
+            ax[i+1].plot('i_16', ratio, 'o', color='C{0}'.format(cond), data=tadf)
+        
+            if species in ['13CH5', '12CH4D']:
+                thisFit = np.polyfit(tadf['i_16'], tadf[ratio], 1)
+                fits[:,i-1, cond] = thisFit
+                i16range = np.linspace(adf['i_16'].min(), adf['i_16'].max())
+                ax[i+1].plot(i16range, thisFit[0]*i16range + thisFit[1], '-', color='C{0}'.format(cond))
+        ax[i+1].set_xlabel('i16 (cps)')
+        ax[i+1].set_ylabel(ratio)
+    
+    
+    # ylim = ax[0].get_ylim()
+    # ax[0].set_yscale('log')
+    # ax[0].set_ylim(bottom=0.1, top=ylim[1])
+    fig.savefig('adduct_line.pdf')
+    tails = h2r[['tailing_13CH5', 'tailing_12CH4D']].mean()
+    return(fits, tails)
+
+
+
 
 def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=False,
                             integration_time=16.7, integration_num=10,
@@ -225,6 +503,8 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
         # 2.1 apply backgrounds
         bgsUsed = {}
         for thisPeak in peakIDs:
+            makeAdductLine = False
+
             dr[thisPeak + '_raw'] = dr[thisPeak].copy()
             # apply bgs
             # first, check if backgrounds are significantly different at 3sigma level:
@@ -233,6 +513,66 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             
             # 2.4 Special treatment just for D2 peak, which has a tailing corr
             if '_dD2_' in d_data_file and thisPeak=='i18':
+                # makeAdductLine = False
+                # check if adduct sweep export in folder
+                filesInFolder = os.listdir()
+                adductFiles =  [i for i in filesInFolder if '_adduct.csv' in i]
+                if len(adductFiles):
+                    adductFile = adductFiles[0]
+                    print('Adduct file found. Proceeding with adduct line creation.')
+                    makeAdductLine = True
+                    input_tail_D2_background = False
+
+
+                else:
+                    while True:
+                        adductFile = input('No dD2 adduct file found in folder\n'
+                                              'drag file or press Enter to input manual bgs... ')
+                        adductFile = adductFile.replace('\\ ',' ').strip("'").strip('"').strip()
+                        if len(adductFile):
+                            adductFile = os.path.abspath(adductFile)
+                            if os.path.exists(adductFile) and adductFile.endswith('.csv'):
+                                print('Adduct file found. Proceeding with adduct line creation.')
+                                makeAdductLine = True
+                                input_tail_D2_background = False
+                                break
+                        else:
+                            input_tail_D2_background = True
+                            print('Opting for manual dD2 bg.')
+                            break
+                if makeAdductLine:
+                    # import adduct line and H2O sweep mass file
+                    dsf = import_scans_stich_masses(adductFile)
+                    try:
+                        # correct for scattered ion bg
+                        print('Measured scattered ion background on 12CH2D2 is: '
+                              '{0:.3f} cps'.format(
+                                dbg['i18'].mean().mean()))
+                        dsf['ReferenceCollector_raw'] = dsf['ReferenceCollector'].copy()
+                        dsf['MasterCollector_raw'] = dsf['MasterCollector'].copy()
+                        dsf['ReferenceCollector'] -= dbg['i18'].mean().mean()
+                        dsf['MasterCollector'] -= dbg['i16'].mean().mean()
+
+                    except(UnboundLocalError):
+                        print('No background scans detected')
+                   
+                    # split into adduct and H2O blocks
+                    dh = dsf.loc[dsf['block']==2, :].copy()
+                    da = dsf.loc[dsf['block']==1, :].copy()
+                    # get resolution and tailing params from H2O scan
+                    h2r = fit_H2O_peaks(dh)
+                    # determine adduct lines by fitting adduct scans
+                    fits, tails = loop_and_make_adduct_line(da, h2r)
+                    # assign adduct line bgs
+                    bgfs = {'13CH5_slope': fits[0,0,:],
+                             '13CH5_int': fits[1,0,:],
+                             '13CH5_tail':[tails['tailing_13CH5'], tails['tailing_13CH5']],
+                             '12CH4D_slope': fits[0,1,:],
+                             '12CH4D_int': fits[1,1,:],
+                             '12CH4D_tail': [tails['tailing_12CH4D'], tails['tailing_12CH4D']] }
+                    bgfs = {'fits': fits, 'tails': tails.values}
+                    
+                
                 if input_tail_D2_background:
                     try:
                         print('Measured scattered ion background on 12CH2D2 is: '
@@ -295,11 +635,22 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             
             # add bgs to list
             bgsUsed[thisPeak] = bgfs
+            if makeAdductLine:
+                fits = bgfs['fits']
+                tails = bgfs['tails']
+                dr[thisPeak+'_adductbg'] = np.nan
+                for isSample in [0,1]:                                
+                    dr.loc[dr['is_sample']==isSample, thisPeak+'_adductbg'] = (
+                        (dr.loc[dr['is_sample']==isSample, 'i16'].values[:,np.newaxis]*fits[
+                            0,:,isSample]+ fits[1,:,isSample])*dr.loc[dr['is_sample']==isSample, 'i16'].values[
+                                :,np.newaxis]*tails).sum(axis=1)
+                dr[thisPeak] = dr[thisPeak + '_raw'] -  dr[thisPeak + '_adductbg']
+                makeAdductLine=False
+            else:  
+                for isSample in [0,1]:                                
+                    dr.loc[dr['is_sample']==isSample,thisPeak] = dr.loc[
+                        dr['is_sample']==isSample,thisPeak + '_raw'] - bgfs[isSample]
 
-            dr.loc[dr['is_sample']==False,thisPeak] = dr.loc[
-                dr['is_sample']==False,thisPeak + '_raw'] - bgfs[0]
-            dr.loc[dr['is_sample']==True,thisPeak] = dr.loc[
-                dr['is_sample']==True,thisPeak + '_raw'] - bgfs[1]
             # if a frag df, apply to here, too
             if 'frag' in blockIDs:
                 # use the frag + 1 background
