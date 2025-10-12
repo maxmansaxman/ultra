@@ -38,7 +38,7 @@ def get_measurement_params(auto_detect=False, file_name=''):
         # assumes parameters based on file name and standard configuration
         repeatBlocks=False
         if '_dD_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 0.524, 120)
+            (cycle_num, integration_time, integration_num) = (10, 0.524, 180)
             peakIDs = ['i16', 'i17']
             blockIDs = ['sweep', 'meas', 'frag', 'bg']
 
@@ -50,12 +50,12 @@ def get_measurement_params(auto_detect=False, file_name=''):
                 blockIDs = ['sweep', 'meas','bg_NH3','bg']
                 repeatBlocks=True
             else:               
-                (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
                 peakIDs = ['i16', 'i17', 'i18']
                 blockIDs = ['sweep', 'bg_NH3', 'meas','bg_NH3','bg']
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
         elif '_dD2_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
+            (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
             peakIDs = ['i16', 'i17', 'i18']
             blockIDs = ['meas', 'bg']
 
@@ -121,14 +121,21 @@ def import_scans_stich_masses(fileName):
     while True:
         
         if 'adduct' in fileName:
-            fileDateStr = re.findall('[0-9]{1,2}-[0-9]{1,2}-[0-9]{2}', fileName)[0]
-            fileDate = datetime.datetime.strptime(fileDateStr, '%m-%d-%y')
+            try:
+                fileDateStr = re.findall('[0-9]{1,2}-[0-9]{1,2}-[0-9]{2}', fileName)[0]
+                fileDate = datetime.datetime.strptime(fileDateStr, '%m-%d-%y')
+            except(IndexError):
+                ctimeStamp = os.path.getctime(fileName)
+                fileDate = datetime.datetime.fromtimestamp(ctimeStamp)
             if fileDate < datetime.datetime(2025, 5, 16):
                 CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v1.xlsx'
             elif  fileDate < datetime.datetime(2025, 6, 1):
                 CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v2.xlsx'
-            else:
+            elif  fileDate < datetime.datetime(2025, 10, 1):
                 CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v3.xlsx'
+            else:
+                CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v4.xlsx'
+                
             break
         else:
             print('Cannot identify file date')
@@ -545,7 +552,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             tbg = dbg[thisPeak]
             
             # if NH3 peak, use this instead
-            if 'bg_NH3' in blockIDs and thisPeak in ['i18']:
+            if 'bg_NH3' in blockIDs and thisPeak in ['i17']:
                 dbNH3['is_outlier'] = False
                 dbNH3['is_outlier'] = (dbNH3.groupby(['block', 'is_sample'])[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
                 dbNH3.loc[~dbNH3['is_outlier'], 'is_outlier'] = (dbNH3.loc[~dbNH3['is_outlier']].groupby(

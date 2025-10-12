@@ -38,37 +38,31 @@ def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan, fr
     # # Define wg values
     d13C_ref_dict = {'GTS-1': -34.14}
     d13C_ref = d13C_ref_dict[ref_gas_ID]
-    # # d13_wg_se = 0.05 # True measured error, but this is a constant
     dD_ref_dict = {'GTS-1': -169.5}
     dD_ref = dD_ref_dict[ref_gas_ID]
-    # frag_rate_dict = {'CIT_2': 0.15, 'BIL_1': 0.15, 'CIT_CH3Cl_2': 0.07, 'GTS-1':0.7}
-    # frag_rate = frag_rate_dict[ref_gas_ID]
     # # Calculate wg ratios and errors
     r13C_ref = (d13C_ref/1000 + 1)*r13C_vpdb
     rD_ref = (dD_ref/1000 + 1)*rD_vsmow
     # calculate concentrations of ref gas
-    m12CH3D_sa = (dD_wg/1000 + 1)*rD_ref*4/(1 + frag_rate*3*rD_ref)
-    rD_sa = m12CH3D_sa/(4 - 3*m12CH3D_sa*frag_rate)
+    m12CH3D_sa = (dD_wg/1000 + 1)*rD_ref*4
+    rD_sa = m12CH3D_sa/4
+
+    
     
     m13CH4_sa = (d13C_wg/1000 + 1)*r13C_ref/(1+frag_rate*(r13C_ref + 3*rD_ref))
     r13C_sa = m13CH4_sa*(1 + 3*frag_rate*rD_sa)/(1 - m13CH4_sa*frag_rate)
 
     
     #wg clumped compositions from Eldridge et al. 2019 ACS Earth Space Chem.
-    # D13CD_ref = 2.5884
     D13CD_ref = 0
     r13CD_ref_stoch = 4*r13C_ref*rD_ref
     r13CD_ref = (D13CD_ref/1000 + 1)*r13CD_ref_stoch
 
-    # DD2_ref = 5.8600
     DD2_ref = 0
     rD2_ref_stoch = 6*rD_ref*rD_ref
     rD2_ref = (DD2_ref/1000 + 1)*rD2_ref_stoch
 
     # # now, calculate for sample side
-    # mD_sa = (dD_wg/1000 + 1)*4*rD_ref/(1 + frag_rate*3*rD_ref)
-    # rD_sa = mD_sa/(4 - frag_rate*3*mD_sa)
-    # r13C_sa = ((d13C_wg/1000 + 1)*r13C_ref/(1 + frag_rate*(0 + 3*rD_ref))*(1 + frag_rate*3*rD_sa))
 
     r13CD_sa = ((d13CD_wg/1000 +1)*r13CD_ref/(1+frag_rate*(r13C_ref + 3*rD_ref)))*(1 + frag_rate*(r13C_sa + 3*rD_sa))
     rD2_sa = ((dD2_wg/1000 +1)*rD2_ref/(1+frag_rate*(r13C_ref + 3*rD_ref)))*(1 + frag_rate*(r13C_sa + 3*rD_sa))
