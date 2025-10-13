@@ -7,6 +7,7 @@ Created on Sun Oct 12 16:33:26 2025
 """
 
 import numpy as np
+import re
 import pandas as pd
 from scipy.stats import skewnorm, bootstrap
 # from scipy.optimize import curve_fit
@@ -21,7 +22,8 @@ d = pd.read_excel(samplePath, index_col=0)
 # 
 d['is_sample'] = d['is_sample'].astype(bool)
 cutoffVal = 60
-RtoUse= 'R17_stable'
+#assume the last one is the H4 peak
+RtoUse= re.findall('R1\d\_', d.columns[-2])[0] + 'stable'
 
 dg = d.groupby(['measure_line', 'is_sample'])
 dp = (dg['i17_raw'].count() - dg['is_off_peak'].sum())/dg['i17_raw'].count()
