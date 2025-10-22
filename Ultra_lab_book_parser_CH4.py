@@ -21,7 +21,7 @@ from scipy.special import erf, erfinv
 import statsmodels.api as sm
 from scipy.interpolate import interp1d, UnivariateSpline, LSQUnivariateSpline
 from scipy.optimize import minimize, least_squares
-
+from scipy.stats import zscore
 import re
 import datetime
 plt.close('all')
@@ -36,29 +36,36 @@ def get_measurement_params(auto_detect=False, file_name=''):
     '''
     if auto_detect and len(file_name) > 0:
         # assumes parameters based on file name and standard configuration
+        repeatBlocks=False
         if '_dD_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 0.524, 120)
+            (cycle_num, integration_time, integration_num) = (10, 0.524, 180)
             peakIDs = ['i16', 'i17']
             blockIDs = ['sweep', 'meas', 'frag', 'bg']
 
-            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
         elif '_d13CD_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
-            peakIDs = ['i16', 'i17', 'i18']
-            blockIDs = ['sweep', 'meas', 'bg']
-            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+            if '_NH3_' in file_name:
+                (cycle_num, integration_time, integration_num) = (6, 1.048, 90)
+                peakIDs = ['i16', 'i17', 'i18']
+                blockIDs = ['sweep', 'meas','bg_NH3','bg']
+                repeatBlocks=True
+            else:               
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+                peakIDs = ['i16', 'i17', 'i18']
+                blockIDs = ['sweep', 'bg_NH3', 'meas','bg_NH3','bg']
+            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
         elif '_dD2_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
+            (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
             peakIDs = ['i16', 'i17', 'i18']
             blockIDs = ['meas', 'bg']
 
-            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
         elif 'D17O' in file_name: 
             (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
             peakIDs = ['i_16', 'i_17', 'i_18']
             blockIDs = ['bg', 'meas', 'bg']
 
-            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
 
 
         else:
@@ -114,12 +121,21 @@ def import_scans_stich_masses(fileName):
     while True:
         
         if 'adduct' in fileName:
-            fileDateStr = re.findall('[0-9]{1,2}-[0-9]{1,2}-[0-9]{2}', fileName)[0]
-            fileDate = datetime.datetime.strptime(fileDateStr, '%m-%d-%y')
+            try:
+                fileDateStr = re.findall('[0-9]{1,2}-[0-9]{1,2}-[0-9]{2}', fileName)[0]
+                fileDate = datetime.datetime.strptime(fileDateStr, '%m-%d-%y')
+            except(IndexError):
+                ctimeStamp = os.path.getctime(fileName)
+                fileDate = datetime.datetime.fromtimestamp(ctimeStamp)
             if fileDate < datetime.datetime(2025, 5, 16):
                 CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v1.xlsx'
-            else:
+            elif  fileDate < datetime.datetime(2025, 6, 1):
                 CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v2.xlsx'
+            elif  fileDate < datetime.datetime(2025, 10, 1):
+                CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v3.xlsx'
+            else:
+                CH4TemplatePath = homeDir + '/CH4templates/CH4_sweep_template_adducts_v4.xlsx'
+                
             break
         else:
             print('Cannot identify file date')
@@ -366,7 +382,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                             integration_time=16.7, integration_num=10,
                             cycle_num=10, sigma_filter=2,
                             prompt_for_backgrounds=True,
-                            input_tail_D2_background=False ):
+                            input_tail_D2_background=False, repeatBlocks=False, zscoreCutoff=6):
     """
     Main function for importing, cleaning and processing a single .csv file
     exported by Qtegra.
@@ -445,10 +461,27 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                   how='left', on='measure_line')
     dp[peakIDs_cln] = dp[peakIDs_cln].astype(float)
     # apply block IDs
+    if repeatBlocks:
+        # if repeatBlocks, assume it's the middle ones
+        blockIDs_repeats = [blockIDs[0]]
+        toRepeat = blockIDs[1:-1]
+        for i in range(0, len(dp['block'].unique())-2, len(toRepeat)):
+            blockIDs_repeats += toRepeat
+        blockIDs_repeats += [blockIDs[-1]]
+        # rename so can move forward
+        blockIDs_simple = blockIDs.copy()
+        blockIDs = blockIDs_repeats
+            
+        
+        
+    # test if sweep block is missing
+    if len(d['block'].unique()) + 1 == len(blockIDs):
+        blockIDs = blockIDs[1:]
     dp['blockID'] = dp['block'].map(dict(zip(range(1, len(blockIDs)+1), blockIDs)))
     # now, split things up
     db = dp.loc[dp['blockID']=='bg', :].copy()
     dr = dp.loc[dp['blockID'] == 'meas',:].copy()
+
     if 'sweep' in blockIDs:
         # extract sweep block
         dsweep = dp.loc[dp['blockID'] == 'sweep',:].copy()
@@ -466,28 +499,36 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
 
 
     
-    dr['measure_line'] = dr['measure_line']- dr.iloc[0,:]['measure_line']
-    dr['meas_line'] = dr['measure_line'].copy()
+    dr['measure_line'] = dr.loc[:,'measure_line']- dr.iloc[0,:]['measure_line']
+    dr['meas_line'] = dr.loc[:, 'measure_line']
     dr = dr.set_index('meas_line')
 
-    if prompt_for_params:
-        cycle_num, integration_time, integration_num = get_measurement_params()    
+    # if prompt_for_params:
+    #     cycle_num, integration_time, integration_num = get_measurement_params()    
     dr = sort_by_cycles(dr, integration_num, cycle_num=cycle_num)
     if 'frag' in blockIDs:
         dfrag = dp.loc[dp['blockID'] == 'frag',:].copy()
         dfrag = sort_by_cycles(dfrag, integration_num)
-        
+    if 'bg_NH3' in blockIDs:
+        dbNH3 = dp.loc[dp['blockID']=='bg_NH3', :].copy()
+        dbNH3 = sort_by_cycles(dbNH3, integration_num)
     # 2. Process and apply backgrounds measurements
     if db.size > 0:   
         # prep columns for big background data merge
-        db['measure_line'] = db['measure_line']- db.iloc[0,:]['measure_line']
-        db['meas_line'] = db['measure_line'].copy()
+        db['measure_line'] = db.loc[:,'measure_line']- db.iloc[0,:]['measure_line']
+        db['meas_line'] = db.loc[:,'measure_line']
         db = db.set_index('meas_line')
 
         try:
             dbr = sort_by_cycles(db, integration_num)
             dbr['is_outlier'] = False
-            bgs = compare_sample_and_std_bgs(dbr, peakIDs_cln)
+            # do a double outlier test
+            dbrg1 = dbr.groupby(['block', 'is_sample'])[peakIDs].apply(zscore)
+            dbr['is_outlier'] = (dbrg1 > zscoreCutoff).any(axis=1).droplevel([0, 1])
+            dbrg2 = dbr.loc[~dbr['is_outlier']].groupby(['block', 'is_sample'])[peakIDs].apply(zscore)
+            dbr.loc[~dbr['is_outlier'], 'is_outlier'] = (dbrg2 > zscoreCutoff).any(axis=1).droplevel([0, 1])
+            
+            bgs = compare_sample_and_std_bgs(dbr, peakIDs)
             dbg = bgs.reset_index().groupby('is_sample')
 
         except(KeyError):
@@ -508,8 +549,20 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             dr[thisPeak + '_raw'] = dr[thisPeak].copy()
             # apply bgs
             # first, check if backgrounds are significantly different at 3sigma level:
-            bgDiff = np.abs(dbg[thisPeak].mean()[1] - dbg[thisPeak].mean()[0])
-            bgThresh = (3*dbg[thisPeak].std()/np.sqrt(dbg[thisPeak].count())).mean()
+            tbg = dbg[thisPeak]
+            
+            # if NH3 peak, use this instead
+            if 'bg_NH3' in blockIDs and thisPeak in ['i17']:
+                dbNH3['is_outlier'] = False
+                dbNH3['is_outlier'] = (dbNH3.groupby(['block', 'is_sample'])[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
+                dbNH3.loc[~dbNH3['is_outlier'], 'is_outlier'] = (dbNH3.loc[~dbNH3['is_outlier']].groupby(
+                    ['block', 'is_sample'])[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
+                bgNH3 = compare_sample_and_std_bgs(dbNH3, peakIDs, isNH3=True)
+                dbgNH3 = bgNH3.reset_index().groupby('is_sample')
+                tbg = dbgNH3[thisPeak]
+
+            bgDiff = np.abs(tbg.mean()[1] - tbg.mean()[0])
+            bgThresh = (3*tbg.std()/np.sqrt(tbg.count())).mean()
             
             # 2.4 Special treatment just for D2 peak, which has a tailing corr
             if '_dD2_' in d_data_file and thisPeak=='i18':
@@ -547,10 +600,38 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                         # correct for scattered ion bg
                         print('Measured scattered ion background on 12CH2D2 is: '
                               '{0:.3f} cps'.format(
-                                dbg['i18'].mean().mean()))
+                                tbg.mean().mean()))
+                        if bgDiff > bgThresh:
+                            print('Scattered ion bgs on {0} are significantly different outside of '
+                                  'uncertainty \n std: '
+                                  '{1:.3f}, sa: {2:.3f}, pm {3:.3f}'.format(
+                                      thisPeak,
+                                      tbg.mean()[0],
+                                      tbg.mean()[1],
+                                      (2*tbg.std()/np.sqrt(tbg.count())).mean()))
+                            bckgrnd_choice = input('Apply (s)ame, (d)ifferent, '
+                                                    'or (c)ustom scatted ion background corrections? ').lower()
+                            if bckgrnd_choice == 'd':
+                                bgscat = [tbg.mean()[0], tbg.mean()[1]]
+               
+                            elif bckgrnd_choice == 'c':
+                                manual_background_std = input(
+                                    'Input a scattered ion background value for peak {0} on wg'.format(
+                                        thisPeak)).strip()
+                                manual_background_sa = input(
+                                    'Input a scattered ion background value for peak {0} on wg'.format(
+                                        thisPeak)).strip()
+                                if len(manual_background_std) > 0:
+                                    bgscat = [float(manual_background_std), float(manual_background_sa)]
+                            else:
+                                # otherwise, apply the same to both
+                                bgscat = [tbg.mean().mean(), tbg.mean().mean()]
+                        else:
+                            # otherwise, apply the same to both
+                            bgscat = [tbg.mean().mean(), tbg.mean().mean()]
                         dsf['ReferenceCollector_raw'] = dsf['ReferenceCollector'].copy()
                         dsf['MasterCollector_raw'] = dsf['MasterCollector'].copy()
-                        dsf['ReferenceCollector'] -= dbg['i18'].mean().mean()
+                        dsf['ReferenceCollector'] -= bgscat[0]
                         dsf['MasterCollector'] -= dbg['i16'].mean().mean()
 
                     except(UnboundLocalError):
@@ -570,7 +651,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                              '12CH4D_slope': fits[0,1,:],
                              '12CH4D_int': fits[1,1,:],
                              '12CH4D_tail': [tails['tailing_12CH4D'], tails['tailing_12CH4D']] }
-                    bgfs = {'fits': fits, 'tails': tails.values}
+                    bgfs = {'fits': fits, 'tails': tails.values, 'scattered':  bgscat}
                     
                 
                 if input_tail_D2_background:
@@ -595,21 +676,20 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                                   float(D2_tail_background_wg),
                                   float(D2_tail_background_sample)))
                         bgfs = [float(D2_tail_background_wg), float(D2_tail_background_sample)]
- 
-            
+                 
             elif bgDiff > bgThresh:
                 print('Backgrounds on {0} are significantly different outside of '
                       'uncertainty \n std: '
                       '{1:.3f}, sa: {2:.3f}, pm {3:.3f}'.format(
                           thisPeak,
-                          dbg[thisPeak].mean()[0],
-                          dbg[thisPeak].mean()[1],
-                          (2*dbg[thisPeak].std()/np.sqrt(dbg[thisPeak].count())).mean()))
+                          tbg.mean()[0],
+                          tbg.mean()[1],
+                          (2*tbg.std()/np.sqrt(tbg.count())).mean()))
                 bckgrnd_choice = input('Apply (s)ame, (d)ifferent, '
                                         'or (c)ustom background corrections? ').lower()
                 # then, apply to sample and standard separately
                 if bckgrnd_choice == 'd':
-                    bgfs = [dbg[thisPeak].mean()[0], dbg[thisPeak].mean()[1]]
+                    bgfs = [tbg.mean()[0], tbg.mean()[1]]
    
                 elif bckgrnd_choice == 'c':
                     manual_background_std = input(
@@ -626,25 +706,30 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
 
                 else:
                     # otherwise, apply the same to both
-                    bgfs = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
+                    bgfs = [tbg.mean().mean(), tbg.mean().mean()]
 
                  
             else:
                 # otherwise, apply the same to both
-                bgfs = [dbg[thisPeak].mean().mean(), dbg[thisPeak].mean().mean()]
+                bgfs = [tbg.mean().mean(), tbg.mean().mean()]
             
             # add bgs to list
             bgsUsed[thisPeak] = bgfs
             if makeAdductLine:
                 fits = bgfs['fits']
                 tails = bgfs['tails']
+                bgscat = bgfs['scattered']
                 dr[thisPeak+'_adductbg'] = np.nan
-                for isSample in [0,1]:                                
+                dr[thisPeak+'_scatbg'] = np.nan
+
+                for isSample in [0,1]: 
+                    dr.loc[dr['is_sample']==isSample, thisPeak+'_scatbg'] = bgscat[isSample]                               
                     dr.loc[dr['is_sample']==isSample, thisPeak+'_adductbg'] = (
                         (dr.loc[dr['is_sample']==isSample, 'i16'].values[:,np.newaxis]*fits[
                             0,:,isSample]+ fits[1,:,isSample])*dr.loc[dr['is_sample']==isSample, 'i16'].values[
                                 :,np.newaxis]*tails).sum(axis=1)
-                dr[thisPeak] = dr[thisPeak + '_raw'] -  dr[thisPeak + '_adductbg']
+                                
+                dr[thisPeak] = dr[thisPeak + '_raw'] -  dr[thisPeak + '_adductbg'] -  dr[thisPeak + '_scatbg']
                 makeAdductLine=False
             else:  
                 for isSample in [0,1]:                                
@@ -675,7 +760,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     # I.e., sigma window in which all observations should fall
     proportional_confidence_interval = np.sqrt(2)*erfinv(
         1.0 - 1.0/(integration_num*2.0))
-    dr = filter_for_outliers(dr, peakIDs, sigma_filter=sigma_filter, basedOn='_stable')
+    dr = filter_for_outliers(dr, peakIDs, sigmaFilter=4, basedOn='_stable')
   
     dr = filter_for_max_ratios(dr, peakIDs,
                                sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
@@ -840,23 +925,24 @@ def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, bas
     basePeak = peakIDs[0]
     dr['signal_is_stable'] = True
     # loop through measure lines
-    for measureLine in dr['measure_line'].unique():
-        thisDr = dr.loc[dr['measure_line']==measureLine, :]
-        # get Xogdr
-        X = thisDr['integration_number'].values
-        X = sm.add_constant(X)
-        # get Y
-        yTrue = thisDr[basePeak].values
-        # fit with robust linear model
-        # use default settings for now
-        resRLM = sm.RLM(yTrue, X,  M=sm.robust.norms.TrimmedMean()).fit()
-        # find unstable ones
-        shotNoise = np.sqrt(resRLM.params[0]*integration_time)
-        unstableIntegrations = X[(np.abs(resRLM.resid*integration_time/shotNoise) > zscoreCutoff), 1]
-        # apply to dr
-        dr.loc[(dr['measure_line']==measureLine) & (
-            dr['integration_number'].isin(unstableIntegrations)),
-            'signal_is_stable'] = False
+    for block in dr['block'].unique():
+        for measureLine in dr['measure_line'].unique():
+            thisDr = dr.loc[(dr['block']==block) & (dr['measure_line']==measureLine), :]
+            # get Xogdr
+            X = thisDr['integration_number'].values
+            X = sm.add_constant(X)
+            # get Y
+            yTrue = thisDr[basePeak].values
+            # fit with robust linear model
+            # use default settings for now
+            resRLM = sm.RLM(yTrue, X,  M=sm.robust.norms.TrimmedMean()).fit()
+            # find unstable ones
+            shotNoise = np.sqrt(resRLM.params[0]*integration_time)
+            unstableIntegrations = X[(np.abs(resRLM.resid*integration_time/shotNoise) > zscoreCutoff), 1]
+            # apply to dr
+            dr.loc[(dr['block']==block) & (dr['measure_line']==measureLine) & (
+                dr['integration_number'].isin(unstableIntegrations)),
+                'signal_is_stable'] = False
     
     # now, filter based on this condition
     sigs_to_rd = {}
@@ -873,7 +959,7 @@ def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, bas
             dr.loc[~dr['signal_is_stable'], filter_ratio_applied] = np.nan
     return(dr)
 
-def filter_for_outliers(dr, peakIDs, sigma_filter=3, basedOn = '_stable'):
+def filter_for_outliers(dr, peakIDs, sigmaFilter=4, basedOn = '_stable'):
     """
     Perfoms a simple outlier test on populations of sub-integrations
 
@@ -890,25 +976,35 @@ def filter_for_outliers(dr, peakIDs, sigma_filter=3, basedOn = '_stable'):
         DataFrame with new columns for outliers added
 
     """
-    dg =dr.groupby('measure_line')
-    drm = dr.set_index('measure_line')
-    basePeak = peakIDs[0]
-    sigs_to_rd = {}
-    for peak in peakIDs[1:]:
+    # dg =dr.groupby('measure_line')
+    # drm = dr.set_index('measure_line')
+    # basePeak = peakIDs[0]
+    # sigs_to_rd = {}
+    filterRatiosBased = []
+    filterRatiosApplied = []
+    for peak in peakIDs[1:]:        
         mass = peak.strip('i_')
-        sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
+        # sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
+        filterRatiosBased.append('R'+ mass + basedOn)
+        filterRatiosApplied.append('R'+ mass + '_cln')
+
+    dr['is_outlier'] = (dr.groupby(['block', 'measure_line'])[filterRatiosBased].apply(zscore) > sigmaFilter).any(axis=1).droplevel([0,1])
+    dr.loc[~dr['is_outlier'], 'is_outlier'] = (dr.loc[~dr['is_outlier']].groupby(['block', 'measure_line'])[filterRatiosBased].apply(zscore) > sigmaFilter).any(axis=1).droplevel([0,1])
+    dr[filterRatiosApplied] = dr[filterRatiosBased].copy()
+    dr.loc[dr['is_outlier'], filterRatiosApplied] = np.nan
+
     # sigs_to_rd = {'i16': ('R16','d16'), 'i17': ('R17','d17')}
-    for i in sigs_to_rd.keys():
-        if i in dr.columns:
-            filter_ratio,d = sigs_to_rd[i]
-            filter_ratio_base = filter_ratio + basedOn
-            filter_ratio_applied = filter_ratio + '_cln'
-            dr['is_outlier'] = ((
-                np.abs(drm[filter_ratio_base]-dg[filter_ratio_base].mean())
-                )/dg[filter_ratio_base].std()> sigma_filter
-                ).reset_index()[filter_ratio_base].copy()
-            dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
-            dr.loc[dr['is_outlier'], filter_ratio_applied] = np.nan
+    # for i in sigs_to_rd.keys():
+        # # if i in dr.columns:
+        #     filter_ratio,d = sigs_to_rd[i]
+        #     filter_ratio_base = filter_ratio + basedOn
+        #     filter_ratio_applied = filter_ratio + '_cln'
+        #     dr['is_outlier'] = ((
+        #         np.abs(drm[filter_ratio_base]-dg[filter_ratio_base].mean())
+        #         )/dg[filter_ratio_base].std()> sigma_filter
+        #         ).reset_index()[filter_ratio_base].copy()
+            # dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
+            # dr.loc[dr['is_outlier'], filter_ratio_applied] = np.nan
     return(dr)
     
 def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, basedOn='_stable'):
@@ -938,8 +1034,8 @@ def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, base
         mass = peak.strip('i_')
         sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
 
-    dg =dr.groupby('measure_line')
-    drm = dr.set_index('measure_line')
+    dg =dr.groupby(['block', 'measure_line'])
+    drm = dr.set_index(['block', 'measure_line'])
     # sigs_to_rd = {'i16': ('R16','d16'), 'i17': ('R17','d17')}
     for i in sigs_to_rd.keys():
         if i in dr.columns:
@@ -957,15 +1053,15 @@ def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, base
                         dbr['is_outlier'] == False, shot_noise_signal].std()**2
                     )/(dg[basePeak].mean())                
         # use fourth-highest to buffer angainst strays
-            dr['is_off_peak'] = ((dg[filter_ratio_base].apply(
-                lambda x: x.sort_values().iloc[-nHighest])-drm[filter_ratio_base]
-                )/shot_noise_std_devs > sigma_filter).reset_index()[0].copy()
+            dr['is_off_peak'] = ((dg[filter_ratio_base].nlargest(nHighest).groupby(level=[0,1]).nth(
+                nHighest-1).droplevel(
+                -1) - drm[filter_ratio_base])/shot_noise_std_devs > sigma_filter).values
             dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
             dr.loc[dr['is_off_peak'],filter_ratio_applied] = np.nan
     return(dr)
 
 
-def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_number', 'is_sample']):
+def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_number', 'is_sample'], isNH3=False):
     dbr_groups = dbr.loc[~dbr['is_outlier']].groupby(group_by)
     bg_mean = dbr_groups[peakIDs_obs].mean()
     bg_std = dbr_groups[peakIDs_obs].std()
@@ -973,10 +1069,13 @@ def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_numbe
     
     bgs = pd.merge(bg_mean, bg_std, how='left', left_index=True, right_index=True, suffixes=['', '_std'])
     bgs = pd.merge(bgs, bg_se, how='left', left_index=True, right_index=True, suffixes=['', '_se'])
-    # save bgs    
+    # save bgs
+    bglabel = 'backgrounds_'
+    if isNH3:
+        bglabel +='NH3_'
     while True:
         try:
-            dbr.to_excel('backgrounds_all.xlsx')
+            dbr.to_excel(bglabel + 'all.xlsx')
             break
         except(PermissionError):
             close_sheet = input(
@@ -985,7 +1084,7 @@ def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_numbe
     # save bgs    
     while True:
         try:
-            bgs[bgs.columns.sort_values()].to_excel('backgrounds_mean.xlsx')
+            bgs[bgs.columns.sort_values()].to_excel(bglabel + 'mean.xlsx')
             break
         except(PermissionError):
             close_sheet = input(
@@ -1015,21 +1114,24 @@ def calculate_deltas(dr, peakIDs):
         mass = peak.strip('i_')
         sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
     # sigs_to_rd = {'i16': ('R16','d16'), 'i17': ('R17','d17')}
-    cols_needed = ['measure_line', 'cycle_number', 'acq_number',
-                   'is_sample', 'integration_time', basePeak]
+    cols_needed = [ 'cycle_number', 'acq_number',
+                    'integration_time', basePeak]
     for i in sigs_to_rd.keys():
         if i in dr.columns:
             r,d = sigs_to_rd[i]             
             dr[r+'_std'] = dr.loc[dr['is_sample'] == 0, r + '_stable']
             dr[r+'_sample'] = dr.loc[dr['is_sample'] == 1, r + '_stable']
             cols_needed.extend([i,r+'_unfiltered', r+'_on_peak', r+'_stable', r+'_cln'])
-    dg =dr.groupby('measure_line')
+    dg =dr.groupby(['block', 'measure_line', 'is_sample'])
     drm = pd.DataFrame(data = dg[cols_needed].mean())
+    drm = drm.reset_index()
+    
     drm['P_imbalance'] = np.nan
-    i_sample = drm.loc[drm['is_sample']==1,'measure_line'].values
-    drm['percent_on_peak'] = dr.loc[(dr['is_off_peak'] == False) & (dr['signal_is_stable'])].groupby(
-        'measure_line')[basePeak].count()/dr.groupby(
-            'measure_line')[basePeak].count()*100
+    i_sample = drm.loc[drm['is_sample']==True, :].index
+    drm['percent_on_peak'] = (dr.loc[(dr['is_off_peak'] == False) & (
+        dr['signal_is_stable'])].groupby(['block','measure_line', 'is_sample'])[
+            basePeak].count()/dr.groupby(['block','measure_line', 'is_sample'])[
+                basePeak].count()*100).values
     while True:
         try: 
             drm.loc[i_sample, 'P_imbalance'] = (drm.loc[i_sample, basePeak]/(
@@ -1189,7 +1291,7 @@ drms = []
 file_names = []
 
 acq_name_list = get_list_of_files_to_import()
-cycle_num, integration_time, integration_num, peakIDs, blockIDs = get_measurement_params(
+cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks = get_measurement_params(
     file_name=acq_name_list[0], auto_detect=True)
 for i in acq_name_list:
     if not os.path.exists(os.path.join(os.path.dirname(i),'d_data_all_summary.xlsx')):
@@ -1197,7 +1299,7 @@ for i in acq_name_list:
     dr, drm, file_name = process_Qtegra_csv_file(i, peakIDs, blockIDs, sigma_filter=3, prompt_for_params=False,
                                                  cycle_num=cycle_num, integration_time=integration_time,
                                                  integration_num=integration_num, prompt_for_backgrounds=False,
-                                                 input_tail_D2_background=True)
+                                                 input_tail_D2_background=True, repeatBlocks=repeatBlocks)
     drs.append(dr)
     drms.append(drm)
     file_names.append(file_name)
@@ -1224,12 +1326,21 @@ for i in acq_name_list:
             colsToAlign = ['acq_number', 'cycle_number']
             drms[-1] = drms[-1].merge(peak_centers[colsToAdd + colsToAlign],
                                       how='left', on=colsToAlign)
-        # catch case where one or two coarse peak centers before main event, deal with this
+        # catch case where peak centers occur between successive std measurements
+        elif len(peak_centers) - (drms[-1]['is_sample'].diff()==0).sum() < 3:
+            peakCenterLocs = drms[-1].loc[(drms[-1]['is_sample'].diff()==0) | (drms[-1]['is_sample'].diff().isnull()), :].index
+            peak_centers['measure_line_index'] = np.nan
+            peakCentersLastX = peak_centers[-len(peakCenterLocs):].index
+            peak_centers.loc[peakCentersLastX, 'measure_line_index'] = peakCenterLocs
+            peak_centers = peak_centers.set_index('measure_line_index')
+            drms[-1] = drms[-1].merge(peak_centers[colsToAdd], how='left', left_index=True, right_index=True)
+         # catch case where one or two coarse peak centers before main event, deal with this
         elif len(peak_centers) - len(drms[-1]) < 3:
             nExtra =  len(peak_centers) - len(drms[-1])
             peak_centers = peak_centers[nExtra:]
             for i, col in enumerate(colsToAdd):
                 drms[-1].insert(i+5, col, peak_centers[col].values)
+           
         else:
             try:
                 print('Data and peak centers are misaligned. Using only the first {0} rows of the peak center data'.format(len(drms[-1])))
