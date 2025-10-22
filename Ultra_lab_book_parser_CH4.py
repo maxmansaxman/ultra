@@ -753,6 +753,33 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             if thisPeak != basePeak:
                 thisR = 'R' + thisPeak.strip('i_') + '_unfiltered'
                 dr[thisR] = dr[thisPeak]/dr[basePeak]
+    else:
+        prompt_for_backgrounds = True
+    if prompt_for_backgrounds:
+        print('No background data detected')
+        bgsUsed = {}
+        for thisPeak in peakIDs:
+            bgfs = []
+            dr[thisPeak + '_raw'] = dr[thisPeak].copy()
+            for isSample, gasID in enumerate(['std', 'sample']):
+                while True:
+                    thisBg = input('Input background for {0} on {1}: '.format(gasID, thisPeak))
+                    try:
+                        if len(thisBg)==0:
+                            thisBg = 0
+                        else:
+                            thisBg = float(thisBg)
+                    except(ValueError):
+                        print('Not an interpretable bg value.\n Try again or press ENTER to skip')    
+                    break
+                bgfs.append(thisBg)
+                dr.loc[dr['is_sample']==isSample,thisPeak] = dr.loc[
+                    dr['is_sample']==isSample,thisPeak + '_raw'] - bgfs[isSample]
+            bgsUsed[thisPeak] = bgfs
+            if thisPeak != basePeak:
+                thisR = 'R' + thisPeak.strip('i_') + '_unfiltered'
+                dr[thisR] = dr[thisPeak]/dr[basePeak]
+
     dr['integration_time'] = integration_time
     # 3. Filter for outlier sub-integrations, calculate delta values
     dr = filter_out_signal_spikes(dr, peakIDs, integration_time, basedOn='_unfiltered')
@@ -768,8 +795,11 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
 
     
     if 'frag' in blockIDs:
-        k_factor = calculate_k_factor(dr, dfrag, plot_results=True)
-        np.savetxt('kfactor.txt', [k_factor])
+        try:
+            k_factor = calculate_k_factor(dr, dfrag, plot_results=True)
+            np.savetxt('kfactor.txt', [k_factor])
+        except(KeyError):
+            print('Calculation of frag rate failed')
     # export sweep blocks for records
     if 'sweep' in blockIDs:
         export_sweep_block(dsweep)
