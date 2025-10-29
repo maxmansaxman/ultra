@@ -21,7 +21,7 @@ from scipy.special import erf, erfinv
 import statsmodels.api as sm
 from scipy.interpolate import interp1d, UnivariateSpline, LSQUnivariateSpline
 from scipy.optimize import minimize, least_squares
-from scipy.stats import zscore
+from scipy.stats import zscore, skewnorm
 import re
 import datetime
 plt.close('all')
@@ -523,9 +523,9 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             dbr = sort_by_cycles(db, integration_num)
             dbr['is_outlier'] = False
             # do a double outlier test
-            dbrg1 = dbr.groupby(['block', 'is_sample'])[peakIDs].apply(zscore)
+            dbrg1 = dbr.groupby(['block', 'is_sample'], group_keys=True)[peakIDs].apply(zscore)
             dbr['is_outlier'] = (dbrg1 > zscoreCutoff).any(axis=1).droplevel([0, 1])
-            dbrg2 = dbr.loc[~dbr['is_outlier']].groupby(['block', 'is_sample'])[peakIDs].apply(zscore)
+            dbrg2 = dbr.loc[~dbr['is_outlier']].groupby(['block', 'is_sample'], group_keys=True)[peakIDs].apply(zscore)
             dbr.loc[~dbr['is_outlier'], 'is_outlier'] = (dbrg2 > zscoreCutoff).any(axis=1).droplevel([0, 1])
             
             bgs = compare_sample_and_std_bgs(dbr, peakIDs)
@@ -554,11 +554,11 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             # if NH3 peak, use this instead
             if 'bg_NH3' in blockIDs and thisPeak in ['i17']:
                 dbNH3['is_outlier'] = False
-                dbNH3['is_outlier'] = (dbNH3.groupby(['block', 'is_sample'])[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
+                dbNH3['is_outlier'] = (dbNH3.groupby(['block', 'is_sample'], group_keys=True)[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
                 dbNH3.loc[~dbNH3['is_outlier'], 'is_outlier'] = (dbNH3.loc[~dbNH3['is_outlier']].groupby(
-                    ['block', 'is_sample'])[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
+                    ['block', 'is_sample'], group_keys=True)[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
                 bgNH3 = compare_sample_and_std_bgs(dbNH3, peakIDs, isNH3=True)
-                dbgNH3 = bgNH3.reset_index().groupby('is_sample')
+                dbgNH3 = bgNH3.reset_index().groupby('is_sample', group_keys=True)
                 tbg = dbgNH3[thisPeak]
 
             bgDiff = np.abs(tbg.mean()[1] - tbg.mean()[0])
@@ -721,7 +721,6 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                 bgscat = bgfs['scattered']
                 dr[thisPeak+'_adductbg'] = np.nan
                 dr[thisPeak+'_scatbg'] = np.nan
-
                 for isSample in [0,1]: 
                     dr.loc[dr['is_sample']==isSample, thisPeak+'_scatbg'] = bgscat[isSample]                               
                     dr.loc[dr['is_sample']==isSample, thisPeak+'_adductbg'] = (
@@ -787,10 +786,10 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     # I.e., sigma window in which all observations should fall
     proportional_confidence_interval = np.sqrt(2)*erfinv(
         1.0 - 1.0/(integration_num*2.0))
-    dr = filter_for_outliers(dr, peakIDs, sigmaFilter=4, basedOn='_stable')
+    dr = filter_for_outliers(dr, peakIDs, sigmaFilter=6, basedOn='_stable')
   
     dr = filter_for_max_ratios(dr, peakIDs,
-                               sigma_filter=proportional_confidence_interval*2, basedOn='_stable')
+                               sigmaFilter=6, basedOn='_cln')
     drm = calculate_deltas(dr, peakIDs)
 
     
@@ -989,7 +988,7 @@ def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, bas
             dr.loc[~dr['signal_is_stable'], filter_ratio_applied] = np.nan
     return(dr)
 
-def filter_for_outliers(dr, peakIDs, sigmaFilter=4, basedOn = '_stable'):
+def filter_for_outliers(dr, peakIDs, sigmaFilter=6, basedOn = '_stable'):
     """
     Perfoms a simple outlier test on populations of sub-integrations
 
@@ -1017,11 +1016,24 @@ def filter_for_outliers(dr, peakIDs, sigmaFilter=4, basedOn = '_stable'):
         # sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
         filterRatiosBased.append('R'+ mass + basedOn)
         filterRatiosApplied.append('R'+ mass + '_cln')
-
-    dr['is_outlier'] = (dr.groupby(['block', 'measure_line'])[filterRatiosBased].apply(zscore) > sigmaFilter).any(axis=1).droplevel([0,1])
-    dr.loc[~dr['is_outlier'], 'is_outlier'] = (dr.loc[~dr['is_outlier']].groupby(['block', 'measure_line'])[filterRatiosBased].apply(zscore) > sigmaFilter).any(axis=1).droplevel([0,1])
-    dr[filterRatiosApplied] = dr[filterRatiosBased].copy()
-    dr.loc[dr['is_outlier'], filterRatiosApplied] = np.nan
+    
+    for i in range(len(filterRatiosBased)):
+        filtRatBase = [filterRatiosBased[i]]
+        filtRatApply = [filterRatiosApplied[i]]
+        dg = dr.groupby(['block', 'is_sample'], group_keys=True)
+        Rmedians = dg[filtRatBase].median()
+        imedians = dg[peakIDs].median()
+        # shot noise std dev of ratios
+        shotNoiseRs = np.sqrt((1/(imedians*dg[['integration_time']].median().values)).sum(axis=1)).values*Rmedians.values.T
+        # assign outliers to values more than 5 sigma from the medians
+        zscores = (dr.pivot(columns=['is_sample'], values=filtRatBase) - Rmedians.values.T)/shotNoiseRs
+        zscores.sum(axis=1) > sigmaFilter
+        dr['is_outlier'] = (zscores.sum(axis=1).abs() > sigmaFilter)
+        
+        # dr['is_outlier'] = (dr.groupby(['block', 'measure_line'], group_keys=True)[filterRatiosBased].apply(zscore) > sigmaFilter).any(axis=1).droplevel([0,1])
+        # dr.loc[~dr['is_outlier'], 'is_outlier'] = (dr.loc[~dr['is_outlier']].groupby(['block', 'measure_line'], group_keys=True)[filterRatiosBased].apply(zscore) > sigmaFilter).any(axis=1).droplevel([0,1])
+        dr[filtRatApply] = dr[filtRatBase].copy()
+        dr.loc[dr['is_outlier'], filtRatApply] = np.nan
 
     # sigs_to_rd = {'i16': ('R16','d16'), 'i17': ('R17','d17')}
     # for i in sigs_to_rd.keys():
@@ -1037,7 +1049,7 @@ def filter_for_outliers(dr, peakIDs, sigmaFilter=4, basedOn = '_stable'):
             # dr.loc[dr['is_outlier'], filter_ratio_applied] = np.nan
     return(dr)
     
-def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, basedOn='_stable'):
+def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedOn='_cln'):
     """
     Outlier test for off-peak drifts. Flags sub-integrations where measurement
     drifts off-peak, based on observing ratios below a certain threshold
@@ -1058,36 +1070,126 @@ def filter_for_max_ratios(dr, peakIDs, sigma_filter=6 , dbr=[], nHighest=5, base
         DataFrame with off-peak sub-integrations flagged
 
     """
+    idx = pd.IndexSlice
+    
     basePeak = peakIDs[0]
-    sigs_to_rd = {}
+
     for peak in peakIDs[1:]:
         mass = peak.strip('i_')
-        sigs_to_rd[peak] = ('R'+mass, 'd'+mass)
+        filtRatBase = 'R'+ mass + basedOn
+        filtRatApply = 'R'+ mass + '_on_peak'
+        iPeaks = [basePeak, peak]
+    
+        
+    
+        # again to get median R per acq
+        dg = dr.groupby(['block', 'acq_number', 'is_sample'], group_keys=True)
+        Rmed = dg[filtRatBase].median().rename('R_med')
+        # also get mode for each acq, which is more robust to outliers than medians in skewed distribution
+        # first, fit each distribution as a skewnorm
+        skewFits = dg[filtRatBase].apply(lambda x: skewnorm.fit(x.dropna()))
+        # next, get an xrange for each data set
+        Rranges = dg[filtRatBase].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
+        # combine these into a df
+        skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
+        # compute pdf
+        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
+        Rmode = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode')
+        # counts medians, just used for shot noise calculation
+        imeds= dg[iPeaks].median()
+        # shot noise std dev of ratios
+        relShotNoise = np.sqrt((1/(imeds*dg['integration_time'].median().median())).sum(axis=1))
+        # relShotNoise = np.sqrt(((np.sqrt(imeds*dg['integration_time'].median().median())/imeds)**2).sum(axis=1))
+    
+        # dfRelShots = pd.DataFrame(data=relShotNoise, columns=[filtRatBase])
+        shotNoise = (Rmode*relShotNoise).rename('R_shot_noise')
+        
+        # compute deltas for these bois
+        deltaModes = (Rmode[idx[:,:,1]]/Rmode[idx[:, :, 0]]-1)*1000
+        deltaMeds = (Rmed[idx[:,:,1]]/Rmed[idx[:, :, 0]]-1)*1000
+    
+        deltaModes = pd.DataFrame(deltaModes.rename('delta_mode'))
+        deltaModes['is_sample'] = 1
+        dms = deltaModes.set_index('is_sample', append=True)
+    
+        grps = dg[filtRatBase].groups
+            
+            
+        
+        grpIndex = ['block', 'acq_number', 'cycle_number', 'is_sample']
+        dg2 = dr.groupby(grpIndex, group_keys=False)
+        nRoll = 5
+        dgRoll = dg2[filtRatBase].rolling(nRoll, center=True).mean()
+        dgRoll = pd.DataFrame(dgRoll)
+        dgRoll = dgRoll.merge(Rmode, how='left', left_index=True, right_index=True)
+        dgRoll = dgRoll.merge(shotNoise, how='left', left_index=True, right_index=True)
+        dgRoll['z_score'] = (dgRoll[filtRatBase]- dgRoll['R_mode'])/(dgRoll['R_shot_noise']/np.sqrt(nRoll))
+        dgRoll['is_on_peak'] = np.abs(dgRoll['z_score']) < sigmaFilter
+        # invert to make is_off_peaks
+        dgRoll['is_off_peak'] = ~dgRoll['is_on_peak']
+        # reset index
+        dRoll = dgRoll.reset_index()
+        dRoll = dRoll.set_index('meas_line')
+        # merge just the key col back into main df
+        if 'is_off_peak' in dr.columns:
+            dr = dr.drop(columns='is_off_peak')
+        dr = dr.merge(dRoll['is_off_peak'], how='left', left_index=True, right_index=True)
+        # cleanup: because of how the roll works, first n before the roll starts are assigned nan
+        # if first one is, nan, assume the previous are, too (becuase integration started on a bad peak)
+        goodStarts = dr.loc[(dr['integration_number'] ==int(nRoll/2)) & (~dr['is_off_peak']), 'measure_line'].values
+        dr.loc[(dr['measure_line'].isin(goodStarts)) & (dr['integration_number'] < int(nRoll/2)), 'is_off_peak'] = False
+        totalInts = dr['integration_number'].max()
+        goodEnds = dr.loc[(dr['integration_number'] == (totalInts - int(nRoll/2))) & (~dr['is_off_peak']), 'measure_line'].values
+        dr.loc[(dr['measure_line'].isin(goodEnds)) & (dr['integration_number'] > (totalInts - int(nRoll/2))), 'is_off_peak'] = False
 
-    dg =dr.groupby(['block', 'measure_line'])
-    drm = dr.set_index(['block', 'measure_line'])
-    # sigs_to_rd = {'i16': ('R16','d16'), 'i17': ('R17','d17')}
-    for i in sigs_to_rd.keys():
-        if i in dr.columns:
-            shot_noise_signal = i
-            filter_ratio,d = sigs_to_rd[i]
-            filter_ratio_base = filter_ratio + basedOn
-            filter_ratio_applied = filter_ratio + '_on_peak'
-            if len(dbr) == 0:
-                shot_noise_std_devs = np.sqrt(
-                    dg[shot_noise_signal].mean()*dg['integration_time'].mean()
-                    )/(dg[basePeak].mean())
-            else:
-                shot_noise_std_devs = np.sqrt(
-                    dg[shot_noise_signal].mean()*dg['integration_time'].mean()+dbr.loc[
-                        dbr['is_outlier'] == False, shot_noise_signal].std()**2
-                    )/(dg[basePeak].mean())                
-        # use fourth-highest to buffer angainst strays
-            dr['is_off_peak'] = ((dg[filter_ratio_base].nlargest(nHighest).groupby(level=[0,1]).nth(
-                nHighest-1).droplevel(
-                -1) - drm[filter_ratio_base])/shot_noise_std_devs > sigma_filter).values
-            dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
-            dr.loc[dr['is_off_peak'],filter_ratio_applied] = np.nan
+
+        
+        dr[filtRatApply] = dr[filtRatBase].copy()
+        dr.loc[dr['is_off_peak'],filtRatApply] = np.nan
+        
+        # do one more groupby with cleaned data
+        dg = dr.groupby(['block', 'acq_number', 'is_sample'], group_keys=True)
+        RmedOnPeak = dg[filtRatApply].median().rename('R_med_on_peak')
+        deltaMedOnPeak = (RmedOnPeak[idx[:,:,1]]/RmedOnPeak[idx[:, :, 0]]-1)*1000
+    
+        dms['delta_median'] = deltaMeds
+        dms['delta_median_on_peak'] = deltaMedOnPeak
+    
+        # combine into a df and save
+        dmSum = pd.concat([imeds, Rmode, Rmed, RmedOnPeak, dms], axis=1)
+        dmSum.to_excel('delta{0}_by_acq.xlsx'.format(mass), merge_cells=False)
+        
+        # make compute deltas and make a df of this to export bc possibly more robust
+        fig, ax = plt.subplots(sharex='col', nrows=len(dr['acq_number'].unique()), ncols=2, figsize=(8,len(grps)), sharey=True)
+        xBins = [np.linspace(dr.loc[dr['is_sample']==0, filtRatBase].min(), dr.loc[dr['is_sample']==0, filtRatBase].max(), 50),
+                 np.linspace(dr.loc[dr['is_sample']==1, filtRatBase].min(), dr.loc[dr['is_sample']==1, filtRatBase].max(), 50)]
+        for grpID in grps:
+            thisAx = ax[grpID[1],grpID[2]]
+            theseData = dg.get_group(grpID)
+            thisAx.plot('x', 'pdf', '-', data=skewModes.loc[grpID], color='C{0}'.format(grpID[2]))
+            thisAx.hist(theseData[filtRatBase], bins=xBins[grpID[2]], color='C{0}'.format(grpID[2]), alpha=0.4, density=True)
+            thisAx.hist(theseData[filtRatApply], bins=xBins[grpID[2]], color='C{0}'.format(grpID[2]), alpha=0.4, density=True)
+    
+            # plot median, mode, and skewnorm fit
+            yLims = thisAx.get_ylim()
+            thisAx.plot([Rmode[grpID], Rmode[grpID]], yLims, ':',color='C{0}'.format(grpID[2]))
+            thisAx.plot([Rmed[grpID], Rmed[grpID]], yLims, '--',color='C{0}'.format(grpID[2]))
+            thisAx.set_ylim(*yLims)
+            if grpID[2]==1:
+                thisAx.text(0.95, 0.95, r'$\delta_{{mode}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_mode'])
+                            +'\n'+ r'$\delta_{{median}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_median'])
+                            + '\n' + r'$\delta_{{median, on peak}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_median_on_peak']),
+                            transform=thisAx.transAxes, ha='right', va='top')
+        title1= r'$\delta_{{mode}}$:{0:.2f} ± {1:.2f}‰'.format(
+            dms['delta_mode'].mean(),dms['delta_mode'].std()/np.sqrt(len(dms['delta_mode'])))
+        title2 = r'$\delta_{{median}}$:{0:.2f} ± {1:.2f}‰'.format(
+            dms['delta_median'].mean(),dms['delta_median'].std()/np.sqrt(len(dms['delta_median'])))
+        title3 = r'$\delta_{{median, on peak}}$:{0:.2f} ± {1:.2f}‰'.format(
+            dms['delta_median_on_peak'].mean(),dms['delta_median_on_peak'].std()/np.sqrt(len(dms['delta_median_on_peak'])))
+        fig.suptitle(title1 + '\n' + title2 + '\n' + title3)
+        fig.savefig('delta{0}_by_acq.pdf'.format(mass))
+    
+    
     return(dr)
 
 
@@ -1160,8 +1262,13 @@ def calculate_deltas(dr, peakIDs):
     i_sample = drm.loc[drm['is_sample']==True, :].index
     drm['percent_on_peak'] = (dr.loc[(dr['is_off_peak'] == False) & (
         dr['signal_is_stable'])].groupby(['block','measure_line', 'is_sample'])[
-            basePeak].count()/dr.groupby(['block','measure_line', 'is_sample'])[
+            basePeak].count()/dg[
                 basePeak].count()*100).values
+    # also compute shot noise multiplier per row
+    medCounts = dg[['integration_time']].median().values*dg[[peakIDs[0], peakIDs[-1]]].median()
+    shotNoise = np.sqrt((1/medCounts).sum(axis=1))*dg[r+'_stable'].median()
+    drm['shot_noise_multiplier'] = (dg[r+'_stable'].std()/shotNoise).values
+    
     while True:
         try: 
             drm.loc[i_sample, 'P_imbalance'] = (drm.loc[i_sample, basePeak]/(
