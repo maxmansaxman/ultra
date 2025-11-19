@@ -1311,7 +1311,7 @@ if len(drms)>0:
         yses.append(np.sqrt(np.diag(resOLS.cov_params()))[0])
         slopes.append(resOLS.params[1])
         # test if slope significantly different than 0
-        useY.append(not (0 >= resOLS.conf_int()[1,0]) and (0 <=resOLS.conf_int()[1,1]))
+        useY.append(not ((0 >= resOLS.conf_int()[1,0]) and (0 <=resOLS.conf_int()[1,1])))
     
     dsum = pd.DataFrame(data={'r': Rs, 'delta':deltas, 'Y-intercept': yints,
                               'Y-intercept SE': yses, 'slope': slopes,
