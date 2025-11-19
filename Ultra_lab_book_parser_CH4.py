@@ -15,6 +15,9 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 mpl.rcParams.update({'figure.autolayout': True})
 mpl.rcParams.update({'mathtext.default': 'regular'})
+mpl.rcParams.update({'lines.markeredgecolor': 'black'})
+mpl.rcParams.update({'scatter.edgecolors': 'black'})
+mpl.rcParams.update({'lines.markersize': 10})
 import pandas as pd
 import os
 from scipy.special import erf, erfinv
