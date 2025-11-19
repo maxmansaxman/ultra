@@ -172,3 +172,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+backgrounds_all.xlsx
+backgrounds_mean.xlsx
+sweepScans.xlsx
+*.xlsx
+*.pdf
+kfactor.txt

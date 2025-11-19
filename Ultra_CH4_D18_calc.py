@@ -107,7 +107,7 @@ if __name__ == '__main__':
         print('No columns to process. Goodbye! ')
     else:
         print('Processing rows: {0}'.format([j for j in i_to_process]))
-        N = int(1e6)
+        N = int(1e5)
         dmc = pd.DataFrame(data = {'i': np.arange(N), 'seed': [random.SystemRandom() for j in range(N)]})
         cols_to_make = ['dD_vsmow', 'd13C_vpdb', 'D13CD_wg', 'DD2_wg']
         for i in i_to_process:

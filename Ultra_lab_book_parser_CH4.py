@@ -37,25 +37,38 @@ def get_measurement_params(auto_detect=False, file_name=''):
     if auto_detect and len(file_name) > 0:
         # assumes parameters based on file name and standard configuration
         repeatBlocks=False
+        stat_info = os.stat(file_name)
+
+        mDate = datetime.datetime.fromtimestamp(stat_info.st_mtime)
         if '_dD_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 0.524, 180)
+            if mDate < datetime.datetime(2025, 10,8):
+                (cycle_num, integration_time, integration_num) = (10, 0.524, 120)
+            else:
+                (cycle_num, integration_time, integration_num) = (10, 0.524, 180)
             peakIDs = ['i16', 'i17']
             blockIDs = ['sweep', 'meas', 'frag', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
         elif '_d13CD_' in file_name:
             if '_NH3_' in file_name:
+                
                 (cycle_num, integration_time, integration_num) = (6, 1.048, 90)
                 peakIDs = ['i16', 'i17', 'i18']
                 blockIDs = ['sweep', 'meas','bg_NH3','bg']
                 repeatBlocks=True
-            else:               
-                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+            else:
+                if mDate < datetime.datetime(2025, 10,8):
+                    (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
+                else:
+                    (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
                 peakIDs = ['i16', 'i17', 'i18']
                 blockIDs = ['sweep', 'bg_NH3', 'meas','bg_NH3','bg']
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
         elif '_dD2_' in file_name:
-            (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+            if mDate < datetime.datetime(2025, 10,8):
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
+            else:
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
             peakIDs = ['i16', 'i17', 'i18']
             blockIDs = ['meas', 'bg']
 
@@ -63,6 +76,12 @@ def get_measurement_params(auto_detect=False, file_name=''):
         elif 'D17O' in file_name: 
             (cycle_num, integration_time, integration_num) = (10, 1.048, 60)
             peakIDs = ['i_16', 'i_17', 'i_18']
+            blockIDs = ['bg', 'meas', 'bg']
+
+            return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
+        elif 'CO_clump' in file_name: 
+            (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+            peakIDs = ['i28', 'i29', 'i30', 'i31']
             blockIDs = ['bg', 'meas', 'bg']
 
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
@@ -96,7 +115,8 @@ def get_measurement_params(auto_detect=False, file_name=''):
             break
         except ValueError:
             print('Not a valid peak ID')
-    return(cycle_num, integration_time, integration_num, peakIDs, blockIDs)
+    repeatBlocks=False
+    return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
 
 
 def import_scans_stich_masses(fileName):
@@ -475,8 +495,13 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
         
         
     # test if sweep block is missing
-    if len(d['block'].unique()) + 1 == len(blockIDs):
+    nBlocks =  len(d['block'].unique())
+    if nBlocks + 1 == len(blockIDs):
         blockIDs = blockIDs[1:]
+    elif nBlocks == 2:
+        blockIDs = ['meas', 'bg']
+    # elif nBlocks == 3:
+    #     blockIDs = ['sweep', 'meas', 'bg']
     dp['blockID'] = dp['block'].map(dict(zip(range(1, len(blockIDs)+1), blockIDs)))
     # now, split things up
     db = dp.loc[dp['blockID']=='bg', :].copy()
@@ -927,7 +952,7 @@ def sort_by_cycles(dr, integration_num, cycle_num=None):
             cycle_num = int((len(dr.loc[dr['block']==block, 'measure_line'].unique())-1)/2)
         dr.loc[dr['block']==block, 'cycle_number'] = (dr.loc[dr['block']==block, 'measure_line']%(cycle_num*2+1)).astype(int)
         dr.loc[dr['block']==block, 'acq_number'] = (dr.loc[dr['block']==block, 'measure_line']/(cycle_num*2+1)).astype(int)
-    dr['is_sample'] = dr['cycle_number']%2
+    dr['is_sample'] = (dr['cycle_number']%2).astype(int)
     return(dr)
 
 def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, basedOn='_unfiltered'):
@@ -1151,12 +1176,27 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         dg = dr.groupby(['block', 'acq_number', 'is_sample'], group_keys=True)
         RmedOnPeak = dg[filtRatApply].median().rename('R_med_on_peak')
         deltaMedOnPeak = (RmedOnPeak[idx[:,:,1]]/RmedOnPeak[idx[:, :, 0]]-1)*1000
+        # refit modes after filtering
+        skewFits = dg[filtRatApply].apply(lambda x: skewnorm.fit(x.dropna()))
+        # next, get an xrange for each data set
+        Rranges = dg[filtRatApply].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
+        # combine these into a df
+        skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
+        # compute pdf
+        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
+        RmodeOnPeak = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode_on_peak')
+        deltaModeOnPeak = (RmodeOnPeak[idx[:,:,1]]/RmodeOnPeak[idx[:, :, 0]]-1)*1000
+
+
+    
+    
     
         dms['delta_median'] = deltaMeds
         dms['delta_median_on_peak'] = deltaMedOnPeak
+        dms['delta_mode_on_peak'] = deltaModeOnPeak
     
         # combine into a df and save
-        dmSum = pd.concat([imeds, Rmode, Rmed, RmedOnPeak, dms], axis=1)
+        dmSum = pd.concat([imeds, Rmode, Rmed, RmedOnPeak, RmodeOnPeak, dms], axis=1)
         dmSum.to_excel('delta{0}_by_acq.xlsx'.format(mass), merge_cells=False)
         
         # make compute deltas and make a df of this to export bc possibly more robust
@@ -1164,7 +1204,7 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         xBins = [np.linspace(dr.loc[dr['is_sample']==0, filtRatBase].min(), dr.loc[dr['is_sample']==0, filtRatBase].max(), 50),
                  np.linspace(dr.loc[dr['is_sample']==1, filtRatBase].min(), dr.loc[dr['is_sample']==1, filtRatBase].max(), 50)]
         for grpID in grps:
-            thisAx = ax[grpID[1],grpID[2]]
+            thisAx = ax[int(grpID[1]),int(grpID[2])]
             theseData = dg.get_group(grpID)
             thisAx.plot('x', 'pdf', '-', data=skewModes.loc[grpID], color='C{0}'.format(grpID[2]))
             thisAx.hist(theseData[filtRatBase], bins=xBins[grpID[2]], color='C{0}'.format(grpID[2]), alpha=0.4, density=True)
@@ -1178,15 +1218,19 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
             if grpID[2]==1:
                 thisAx.text(0.95, 0.95, r'$\delta_{{mode}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_mode'])
                             +'\n'+ r'$\delta_{{median}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_median'])
+                            + '\n' + r'$\delta_{{mode, on peak}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_mode_on_peak'])
                             + '\n' + r'$\delta_{{median, on peak}}$:{0:.2f}‰'.format(dms.loc[grpID, 'delta_median_on_peak']),
                             transform=thisAx.transAxes, ha='right', va='top')
         title1= r'$\delta_{{mode}}$:{0:.2f} ± {1:.2f}‰'.format(
             dms['delta_mode'].mean(),dms['delta_mode'].std()/np.sqrt(len(dms['delta_mode'])))
         title2 = r'$\delta_{{median}}$:{0:.2f} ± {1:.2f}‰'.format(
             dms['delta_median'].mean(),dms['delta_median'].std()/np.sqrt(len(dms['delta_median'])))
-        title3 = r'$\delta_{{median, on peak}}$:{0:.2f} ± {1:.2f}‰'.format(
+        title3 = r'$\delta_{{mode, on peak}}$:{0:.2f} ± {1:.2f}‰'.format(
+            dms['delta_mode_on_peak'].mean(),dms['delta_mode_on_peak'].std()/np.sqrt(len(dms['delta_mode_on_peak'])))
+
+        title4 = r'$\delta_{{median, on peak}}$:{0:.2f} ± {1:.2f}‰'.format(
             dms['delta_median_on_peak'].mean(),dms['delta_median_on_peak'].std()/np.sqrt(len(dms['delta_median_on_peak'])))
-        fig.suptitle(title1 + '\n' + title2 + '\n' + title3)
+        fig.suptitle(title1 + '\n' + title2 + '\n' + title3 + '\n' + title4)
         fig.savefig('delta{0}_by_acq.pdf'.format(mass))
     
     
@@ -1472,7 +1516,7 @@ for i in acq_name_list:
             peak_centers = peak_centers.set_index('measure_line_index')
             drms[-1] = drms[-1].merge(peak_centers[colsToAdd], how='left', left_index=True, right_index=True)
          # catch case where one or two coarse peak centers before main event, deal with this
-        elif len(peak_centers) - len(drms[-1]) < 3:
+        elif len(peak_centers) - len(drms[-1]) < 5:
             nExtra =  len(peak_centers) - len(drms[-1])
             peak_centers = peak_centers[nExtra:]
             for i, col in enumerate(colsToAdd):
