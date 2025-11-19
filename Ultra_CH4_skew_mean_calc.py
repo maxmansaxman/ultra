@@ -13,7 +13,7 @@ import pandas as pd
 from scipy.stats import skewnorm, bootstrap
 # from scipy.optimize import curve_fit
 import matplotlib.pyplot as plt
-from scipy.stats import zscore, iqr, skewtest
+from scipy.stats import zscore, iqr, skewtest, gaussian_kde
 
 plt.close('all')
 homeDir = os.getcwd()
@@ -67,17 +67,19 @@ def fit_skew(fileName, percentCutoff=60, num_resamples=100, iqm=3, medianCut=0.3
     d = d.drop(columns = [0])
 
     # fit sample and std, compute delta
-    locs = []
+    skewModes = []
     fits = []
+    kdeModes = []
+    skewStats = []
     medsReal = []
-    medsFit = []
     clr=0
     fig, ax = plt.subplots(nrows=2)
     for acq in d['acq_number'].unique():
-        locs.append([])
+        skewModes.append([])
         fits.append([])
+        kdeModes.append([])
+        skewStats.append([])      
         medsReal.append([])
-        medsFit.append([])        
         for b in [0, 1]:
             theseData = d.loc[(d['is_sample']==bool(b)) & (
                 d['percent_on_peak']>percentCutoff) & (
@@ -95,21 +97,22 @@ def fit_skew(fileName, percentCutoff=60, num_resamples=100, iqm=3, medianCut=0.3
             highBound = Q3 + iqm*IQR
             dataCln = theseData[(theseData >= lowBound) & (theseData <= highBound)]
             
-        
-        # zScore = np.abs(zscore(theseData))
-        # theseData = theseData[zScore<zcut]
-        # zScore = np.abs(zscore(theseData))
-        # theseData = theseData[zScore<zcut]
-       
-        # theseData = d.loc[(d['is_sample']==bool(b)) & (d['percent_on_peak']>percentCutoff) & (d['signal_is_stable']), RtoUse].values
             thisH = ax[b].hist(dataCln, bins=50, density=True, alpha=0.3, color='C{0}'.format(clr))
             xlim = ax[b].get_xlim()
         
-            xRange = np.linspace(*xlim, num=1000)
+            xRange = np.linspace(*xlim, num=10000)
             thisFit = skewnorm.fit(dataCln, loc=np.median(dataCln), method='MLE')
             fits[-1].append(thisFit)
-            locs[-1].append(thisFit[1])
-            medsFit[-1].append(skewnorm.median(*thisFit))
+            thispdf = skewnorm.pdf(xRange, *thisFit)
+            skewStat = skewtest(dataCln)
+            skewStats[-1].append(skewStat.pvalue)
+            skewMode = xRange[np.argmax(thispdf)]
+            skewModes[-1].append(skewMode)
+            
+            kde = gaussian_kde(dataCln)
+            kdeMode = xRange[np.argmax(kde(xRange))]
+            kdeModes[-1].append(kdeMode)
+            
             ax[b].plot(xRange, skewnorm.pdf(xRange, *thisFit), '-', color='C{0}'.format(clr))
             ax[b].set_xlim(*xlim)
             ylim = ax[b].get_ylim()
@@ -124,34 +127,43 @@ def fit_skew(fileName, percentCutoff=60, num_resamples=100, iqm=3, medianCut=0.3
         
     
     # booty = np.stack(boots)
-    mf = np.asarray(medsFit).T
-    deltas = (mf[1]/mf[0]-1)*1000
-    delta = np.mean(deltas)
-    deltaSD = np.std(deltas)
-    deltaSE = np.std(deltas)/np.sqrt(len(deltas))
+    # mf = np.asarray(medsFit).T
+    # deltas = (mf[1]/mf[0]-1)*1000
+    # delta = np.mean(deltas)
+    # deltaSD = np.std(deltas)
+    # deltaSE = np.std(deltas)/np.sqrt(len(deltas))
     
-    mr = np.asarray(medsReal).T
-    deltasM = (mr[1]/mr[0]-1)*1000
-    deltaM = np.mean(deltasM)
-    deltaMSD =  np.std(deltasM)
-    deltaMSE = np.std(deltasM)/np.sqrt(len(deltasM))
-    result = ("data median delta: {0:.3f} ± {1:.3f}‰ \n".format(deltaM,deltaMSE),
-              "fit median delta: {0:.3f} ± {1:.3f}‰".format(delta,deltaSE))
+    # mr = np.asarray(medsReal).T
+    # deltasM = (mr[1]/mr[0]-1)*1000
+    # deltaM = np.mean(deltasM)
+    # deltaMSD =  np.std(deltasM)
+    # deltaMSE = np.std(deltasM)/np.sqrt(len(deltasM))
+    # result = ("data median delta: {0:.3f} ± {1:.3f}‰ \n".format(deltaM,deltaMSE),
+    #           "fit median delta: {0:.3f} ± {1:.3f}‰".format(delta,deltaSE))
     
-    rs = ''.join(result)
-    ax[b].text(0.05, 0.95, rs, transform=ax[b].transAxes, va='top')
+    # rs = ''.join(result)
+    # ax[b].text(0.05, 0.95, rs, transform=ax[b].transAxes, va='top')
     fig.savefig('skewFits.pdf')
     plt.close('all')
-    print(rs)
-    resDict = {'d_data': deltaM,
-               'd_data_SD': deltaMSD,
-               'd_data_SE': deltaMSE,
-               'd_fit': delta,
-               'd_fit_SD': deltaSD,
-               'd_fit_SE': deltaSE}
+    # print(rs)
     
-    with open("skewDelta.txt", "w") as file:
-        file.write(rs)
+    
+    # resDict = {'d_data': deltaM,
+    #            'd_data_SD': deltaMSD,
+    #            'd_data_SE': deltaMSE,
+    #            'd_fit': delta,
+    #            'd_fit_SD': deltaSD,
+    #            'd_fit_SE': deltaSE}
+    
+    resDict = {'median_real': medsReal,
+               'skew_fit': fits,
+               'mode_skew': skewModes,
+               'mode_kde': kdeModes,
+               'skew_stats': skewStats
+               }
+    
+    # with open("skewDelta.txt", "w") as file:
+        # file.write(rs)
     return(resDict)
 
 
