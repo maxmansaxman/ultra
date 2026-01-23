@@ -41,6 +41,10 @@ def get_measurement_params(auto_detect=False, file_name=''):
     if auto_detect and len(file_name) > 0:
         # assumes parameters based on file name and standard configuration
         repeatBlocks=False
+        stat_info = os.stat(file_name)
+
+        mDate = datetime.datetime.fromtimestamp(stat_info.st_mtime)
+
         if '_dD_' in file_name:
             (cycle_num, integration_time, integration_num) = (10, 0.524, 180)
             peakIDs = ['i16', 'i17']
@@ -69,10 +73,23 @@ def get_measurement_params(auto_detect=False, file_name=''):
             peakIDs = ['i_16', 'i_17', 'i_18']
             blockIDs = ['bg', 'meas', 'bg']
 
-        elif 'CO_clump' in file_name: 
-            (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
-            peakIDs = ['i28', 'i29', 'i30', 'i31']
-            blockIDs = ['bg', 'meas', 'bg']
+        elif 'CO_clump' in file_name:
+            if mDate < datetime.datetime(2025, 11,23):
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+                peakIDs = ['i28', 'i29', 'i30', 'i31']
+                blockIDs = ['bg', 'meas', 'bg']
+            elif mDate < datetime.datetime(2025, 12,5):
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+                peakIDs = ['i28', 'i29', 'i30', 'i31']
+                blockIDs = ['bg', 'meas', 'bg_i31', 'bg']
+            elif mDate < datetime.datetime(2025, 12,8):
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+                peakIDs = ['i28', 'i29', 'i30', 'i31']
+                blockIDs = ['sweep', 'bg', 'meas', 'bg_i31', 'bg']
+            else:
+                (cycle_num, integration_time, integration_num) = (10, 1.048, 90)
+                peakIDs = ['i28', 'i29', 'i30', 'i31']
+                blockIDs = ['sweep', 'bg', 'meas', 'bg']
             return(cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks)
 
 
@@ -125,7 +142,7 @@ def compute_N2_contents(fileName):
         dfs[-1].rename(columns={1:'i', 4: peak}, inplace=True)
         dfs[-1] = dfs[-1].astype({'i':int, 'block':int, 'meas':int, peak:float}).set_index(
             ['i', 'block', 'meas'])
-    ds = pd.concat(dfs, axis=1, join='outer')
+    ds = pd.concat(dfs, axis=1, join='outer').sort_index()
     peaks = ds.columns.values
     dn = ds.loc[idx[:,:,2], :].copy()
     ds.loc[idx[:,:,2], :] =  np.nan
@@ -152,14 +169,32 @@ def compute_N2_contents(fileName):
             dsn.loc[dsn['cycle_number']==cycle, peak+'_pred'] = resRLM.predict(X)
     
     # loop again and plot
-    fig, ax = plt.subplots(nrows=len(hasN2))
+    fig, ax = plt.subplots(nrows=len(hasN2), ncols=2, sharex=True, figsize=(8,4))
     for i, peak in enumerate(hasN2):
         dsn[peak + '_justN2'] = dsn[peak + '_N2'] - dsn[peak + '_pred']
         dsn['RN2_'+peak] = dsn[peak + '_justN2']/dsn[peak + '_pred']
+        for j in [0,1]:
+            ax[i,0].plot('i', peak, '.', alpha=0.1, color='C{0}'.format(j),
+                       data=dsn.loc[dsn['is_sample']==j, :])
+            ax[i,0].plot('i',  peak+ '_N2', 'P', alpha=0.1, markersize=5, color='C{0}'.format(j),
+                       data=dsn.loc[dsn['is_sample']==j, :])
+            ax[i,0].plot('i', peak + '_pred', '-', alpha=0.4, color='C{0}'.format(j),
+                       data=dsn.loc[dsn['is_sample']==j, :])
+            ax[i,1].plot('i', peak + '_justN2', 'P', alpha=0.1, markersize=5, color='C{0}'.format(j),
+                       data=dsn.loc[dsn['is_sample']==j, :])
+        # discount any row where RN2 is less than 0.00%
+    iN2TooLow = dsn['RN2_i28'] < 0        
+    dsn.loc[iN2TooLow,['i28_justN2', 'i29_justN2']] = np.nan
+    fig.savefig('N2_data_all.pdf')
+    # use average of times when we got this right
+    R15fixed = 0.00352
     dsn['R15'] = dsn['i29_justN2']/dsn['i28_justN2']/2
-    dsn['i30_15N2_pred'] = dsn['i28_justN2']*(dsn['R15']**2)
+    dsn['i30_15N2_pred'] = dsn['i28_justN2']*R15fixed**2
+    # dsn['i30_15N2_pred'] = dsn['i28_justN2']*(dsn['R15']**2)
     dsn['percent_N2'] = dsn['i28_justN2']/dsn['i28_pred']*100
     
+    # export
+    dsn.to_excel('N2_data_all.xlsx')
     
     dgn = dsn.groupby(['is_sample', 'cycle_number'])
     dgm = dgn.mean()
@@ -371,9 +406,10 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
     if 'frag' in blockIDs:
         dfrag = dp.loc[dp['blockID'] == 'frag',:].copy()
         dfrag = sort_by_cycles(dfrag, integration_num)
-    if 'bg_NH3' in blockIDs:
-        dbNH3 = dp.loc[dp['blockID']=='bg_NH3', :].copy()
-        dbNH3 = sort_by_cycles(dbNH3, integration_num)
+    if 'bg_i31' in blockIDs:
+        dbi31 = dp.loc[dp['blockID']=='bg_i31', :].copy()
+        dbi31 = sort_by_cycles(dbi31, integration_num)
+    
     # 2. Process and apply backgrounds measurements
     if db.size > 0:   
         # prep columns for big background data merge
@@ -414,8 +450,6 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
             tbg = dbg[thisPeak]
             
   
-            bgDiff = np.abs(tbg.mean()[1] - tbg.mean()[0])
-            bgThresh = (3*tbg.std()/np.sqrt(tbg.count())).mean()
             
             if thisPeak=='i30':
                 filesInFolder = os.listdir()
@@ -426,7 +460,18 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                     N2fits, dN2piv = compute_N2_contents(N2file)
                     make15N2Correction = True
                 
-            
+            elif 'bg_i31' in blockIDs and thisPeak in ['i31x']:
+                dbi31['is_outlier'] = False
+                dbi31['is_outlier'] = (dbi31.groupby(['block', 'is_sample'], group_keys=True)[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
+                dbi31.loc[~dbi31['is_outlier'], 'is_outlier'] = (dbi31.loc[~dbi31['is_outlier']].groupby(
+                    ['block', 'is_sample'], group_keys=True)[thisPeak].apply(zscore) > zscoreCutoff).droplevel([0, 1])
+                bgi31 = compare_sample_and_std_bgs(dbi31, peakIDs, isi31=True)
+                dbgi31= bgi31.reset_index().groupby('is_sample', group_keys=True)
+                tbg = dbgi31[thisPeak]
+        
+            bgDiff = np.abs(tbg.mean()[1] - tbg.mean()[0])
+            bgThresh = (3*tbg.std()/np.sqrt(tbg.count())).mean()
+    
  
             if bgDiff > bgThresh:
                 print('Backgrounds on {0} are significantly different outside of '
@@ -673,7 +718,7 @@ def sort_by_cycles(dr, integration_num, cycle_num=None):
     dr['is_sample'] = (dr['cycle_number']%2).astype(int)
     return(dr)
 
-def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, basedOn='_unfiltered'):
+def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, basedOn='_unfiltered', basePeakPercentCutoff=20):
     """
     Performs a robust linear regression on base peak to identify signal spikes
 
@@ -696,6 +741,7 @@ def filter_out_signal_spikes(dr, peakIDs, integration_time, zscoreCutoff=30, bas
     # assume base peak is first peak in list
     basePeak = peakIDs[0]
     dr['signal_is_stable'] = True
+    
     # loop through measure lines
     for block in dr['block'].unique():
         for measureLine in dr['measure_line'].unique():
@@ -778,21 +824,10 @@ def filter_for_outliers(dr, peakIDs, sigmaFilter=6, basedOn = '_stable'):
         dr[filtRatApply] = dr[filtRatBase].copy()
         dr.loc[dr['is_outlier'], filtRatApply] = np.nan
 
-    # sigs_to_rd = {'i16': ('R16','d16'), 'i17': ('R17','d17')}
-    # for i in sigs_to_rd.keys():
-        # # if i in dr.columns:
-        #     filter_ratio,d = sigs_to_rd[i]
-        #     filter_ratio_base = filter_ratio + basedOn
-        #     filter_ratio_applied = filter_ratio + '_cln'
-        #     dr['is_outlier'] = ((
-        #         np.abs(drm[filter_ratio_base]-dg[filter_ratio_base].mean())
-        #         )/dg[filter_ratio_base].std()> sigma_filter
-        #         ).reset_index()[filter_ratio_base].copy()
-            # dr[filter_ratio_applied] = dr[filter_ratio_base].copy()
-            # dr.loc[dr['is_outlier'], filter_ratio_applied] = np.nan
     return(dr)
     
-def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedOn='_cln', makePlots=False):
+def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[],
+                          nHighest=5, basedOn='_cln', makePlots=False, basePeakPercentCutoff=20):
     """
     Outlier test for off-peak drifts. Flags sub-integrations where measurement
     drifts off-peak, based on observing ratios below a certain threshold
@@ -823,20 +858,22 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         filtRatApply = 'R'+ mass + '_on_peak'
         iPeaks = [basePeak, peak]
     
-        
+        intensityOff = (np.abs(dr[basePeak] - dr[basePeak].median())/dr[basePeak].median()*100)>basePeakPercentCutoff
+        dr.loc[intensityOff, filtRatBase] = np.nan
+
     
         # again to get median R per acq
         dg = dr.groupby(['block', 'acq_number', 'is_sample'], group_keys=True)
         Rmed = dg[filtRatBase].median().rename('R_med')
         # also get mode for each acq, which is more robust to outliers than medians in skewed distribution
         # first, fit each distribution as a skewnorm
-        skewFits = dg[filtRatBase].apply(lambda x: skewnorm.fit(x.dropna()))
+        skewFits = dg[filtRatBase].apply(lambda x: skewnorm.fit(x.dropna()) if len(x.dropna())>3 else None)
         # next, get an xrange for each data set
         Rranges = dg[filtRatBase].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
         # combine these into a df
         skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
         # compute pdf
-        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
+        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params) if y.params is not None else None, axis=1)
         Rmode = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode')
         # counts medians, just used for shot noise calculation
         imeds= dg[iPeaks].median()
@@ -889,25 +926,36 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         
         dr[filtRatApply] = dr[filtRatBase].copy()
         dr.loc[dr['is_off_peak'],filtRatApply] = np.nan
-        
+        # drop rows that are more than 20% away from median value
+        intensityOff = (np.abs(dr[basePeak] - dr[basePeak].median())/dr[basePeak].median()*100)>basePeakPercentCutoff
+        dr.loc[intensityOff, filtRatApply] = np.nan
+        basePeakPercentCutoff
         # do one more groupby with cleaned data
         dg = dr.groupby(['block', 'acq_number', 'is_sample'], group_keys=True)
         RmedOnPeak = dg[filtRatApply].median().rename('R_med_on_peak')
         deltaMedOnPeak = (RmedOnPeak[idx[:,:,1]]/RmedOnPeak[idx[:, :, 0]]-1)*1000
+
+        # try:
         # refit modes after filtering
-        skewFits = dg[filtRatApply].apply(lambda x: skewnorm.fit(x.dropna()))
+        skewFits = dg[filtRatApply].apply(lambda x: skewnorm.fit(x.dropna()) if len(x.dropna())>3 else None)
         # next, get an xrange for each data set
         Rranges = dg[filtRatApply].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
         # combine these into a df
         skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
         # compute pdf
-        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
+        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params) if y.params is not None else None, axis=1)
         RmodeOnPeak = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode_on_peak')
         deltaModeOnPeak = (RmodeOnPeak[idx[:,:,1]]/RmodeOnPeak[idx[:, :, 0]]-1)*1000
-
+            
         dms['delta_median'] = deltaMeds
         dms['delta_median_on_peak'] = deltaMedOnPeak
         dms['delta_mode_on_peak'] = deltaModeOnPeak
+
+                    
+                
+                
+                
+            
 
     
         # combine into a df and save
@@ -953,7 +1001,7 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
     return(dr)
 
 
-def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_number', 'is_sample'], isNH3=False):
+def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_number', 'is_sample'], isi31=False):
     dbr_groups = dbr.loc[~dbr['is_outlier']].groupby(group_by)
     bg_mean = dbr_groups[peakIDs_obs].mean()
     bg_std = dbr_groups[peakIDs_obs].std()
@@ -963,8 +1011,8 @@ def compare_sample_and_std_bgs(dbr, peakIDs_obs, group_by=['block', 'cycle_numbe
     bgs = pd.merge(bgs, bg_se, how='left', left_index=True, right_index=True, suffixes=['', '_se'])
     # save bgs
     bglabel = 'backgrounds_'
-    if isNH3:
-        bglabel +='NH3_'
+    if isi31:
+        bglabel +='i31_'
     while True:
         try:
             dbr.to_excel(bglabel + 'all.xlsx')
@@ -1235,7 +1283,7 @@ for i in acq_name_list:
                 peak_centers = peak_centers.set_index('measure_line_index')
                 drms[-1] = drms[-1].merge(peak_centers[colsToAdd], how='left', left_index=True, right_index=True)
              # catch case where one or two coarse peak centers before main event, deal with this
-            elif len(peak_centers) - len(drms[-1]) < 5:
+            elif np.abs(len(peak_centers) - len(drms[-1])) < 5:
                 nExtra =  len(peak_centers) - len(drms[-1])
                 peak_centers = peak_centers[nExtra:]
                 for i, col in enumerate(colsToAdd):
@@ -1255,6 +1303,7 @@ for i in acq_name_list:
                 except(ValueError):
                     print('Unable to align peak centers')
 
+basedOn = '_cln'
 if len(drms)>0:    
     # consolidate all data frames
     dr_all = drs[0].copy()
@@ -1277,10 +1326,10 @@ if len(drms)>0:
     Rkeys = []
     Rs = []
     for peakID in peakIDs[1:]:
-        delta = 'd{0}_on_peak'.format(peakID[1:])
+        delta = 'd{0}{1}'.format(peakID[1:], basedOn)
         deltas.append(delta)
         fig, ax = plt.subplots()
-        thisR = 'R{0}_on_peak'.format(peakID[1:])
+        thisR = 'R{0}{1}'.format(peakID[1:], basedOn)
         Rs.append(drm_all[thisR].mean())
         
         

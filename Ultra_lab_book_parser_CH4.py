@@ -24,7 +24,7 @@ from scipy.special import erf, erfinv
 import statsmodels.api as sm
 from scipy.interpolate import interp1d, UnivariateSpline, LSQUnivariateSpline
 from scipy.optimize import minimize, least_squares
-from scipy.stats import zscore, skewnorm
+from scipy.stats import zscore, skewnorm, FitError
 import re
 import datetime
 plt.close('all')
@@ -168,6 +168,21 @@ def import_scans_stich_masses(fileName):
     cTemplate = pd.read_excel(CH4TemplatePath)
     # merge everything except the intensities
     colsToAdd = cTemplate.columns[~cTemplate.columns.str.contains('(cps)', regex=False)]
+    # catch case where too many or too few adduct scans
+    if len(ds) != len(cTemplate):
+        nAdductTemplate = 4
+        iPerBlock = int(len(cTemplate.loc[cTemplate.block==1])/nAdductTemplate)
+        nAdducts = int(len(ds.loc[ds['block']==1, :])/iPerBlock)
+        extraAdds = nAdducts - nAdductTemplate
+        if extraAdds > 0:
+            cTempNew = pd.concat([cTemplate.iloc[0:(extraAdds*iPerBlock)], cTemplate], axis=0)
+        elif extraAdds < 0:
+            cTempNew = cTemplate.iloc[(iPerBlock*-1*extraAdds):]
+        cTempNew['i'] = range(len(cTempNew))
+        cTempNew.loc[cTempNew['block']==1, 'Measure'] =  np.floor(cTempNew.loc[cTempNew['block']==1, 'i']/iPerBlock).astype(int)
+
+        
+        cTemplate = cTempNew
     dsf = ds.merge(cTemplate.loc[:, colsToAdd], how='inner', on=['i', 'block'])
     # save
     dsf.to_excel('{0}_processed_all.xlsx'.format(fileName))       
@@ -1115,14 +1130,7 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         Rmed = dg[filtRatBase].median().rename('R_med')
         # also get mode for each acq, which is more robust to outliers than medians in skewed distribution
         # first, fit each distribution as a skewnorm
-        skewFits = dg[filtRatBase].apply(lambda x: skewnorm.fit(x.dropna()))
-        # next, get an xrange for each data set
         Rranges = dg[filtRatBase].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
-        # combine these into a df
-        skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
-        # compute pdf
-        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
-        Rmode = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode')
         # counts medians, just used for shot noise calculation
         imeds= dg[iPeaks].median()
         # shot noise std dev of ratios
@@ -1130,11 +1138,23 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         # relShotNoise = np.sqrt(((np.sqrt(imeds*dg['integration_time'].median().median())/imeds)**2).sum(axis=1))
     
         # dfRelShots = pd.DataFrame(data=relShotNoise, columns=[filtRatBase])
-        shotNoise = (Rmode*relShotNoise).rename('R_shot_noise')
+        shotNoise = (Rmed*relShotNoise).rename('R_shot_noise')
         
         # compute deltas for these bois
-        deltaModes = (Rmode[idx[:,:,1]]/Rmode[idx[:, :, 0]]-1)*1000
         deltaMeds = (Rmed[idx[:,:,1]]/Rmed[idx[:, :, 0]]-1)*1000
+
+        try:        
+            skewFits = dg[filtRatBase].apply(lambda x: skewnorm.fit(x.dropna()))
+            # next, get an xrange for each data set
+            # combine these into a df
+            skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
+            # compute pdf
+            skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
+            Rmode = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode')
+            deltaModes = (Rmode[idx[:,:,1]]/Rmode[idx[:, :, 0]]-1)*1000
+        except FitError:
+            Rmode = Rmed.rename('R_mode')
+            deltaModes = deltaMeds
     
         deltaModes = pd.DataFrame(deltaModes.rename('delta_mode'))
         deltaModes['is_sample'] = 1
@@ -1180,15 +1200,24 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         RmedOnPeak = dg[filtRatApply].median().rename('R_med_on_peak')
         deltaMedOnPeak = (RmedOnPeak[idx[:,:,1]]/RmedOnPeak[idx[:, :, 0]]-1)*1000
         # refit modes after filtering
-        skewFits = dg[filtRatApply].apply(lambda x: skewnorm.fit(x.dropna()))
-        # next, get an xrange for each data set
         Rranges = dg[filtRatApply].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
-        # combine these into a df
-        skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
-        # compute pdf
-        skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
-        RmodeOnPeak = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode_on_peak')
-        deltaModeOnPeak = (RmodeOnPeak[idx[:,:,1]]/RmodeOnPeak[idx[:, :, 0]]-1)*1000
+
+        try:
+            skewFits = dg[filtRatApply].apply(lambda x: skewnorm.fit(x.dropna()))
+            # next, get an xrange for each data set
+            # combine these into a df
+            skewModes = pd.DataFrame(data={'params': skewFits, 'x': Rranges})
+            # compute pdf
+            skewModes['pdf'] = skewModes.apply(lambda y: skewnorm.pdf(y.x, *y.params), axis=1)
+            RmodeOnPeak = skewModes.apply(lambda y: y.x[np.argmax(y.pdf)], axis=1).rename('R_mode_on_peak')
+            deltaModeOnPeak = (RmodeOnPeak[idx[:,:,1]]/RmodeOnPeak[idx[:, :, 0]]-1)*1000
+        except FitError:
+            RmodeOnPeak =RmedOnPeak
+            deltaModeOnPeak = deltaMedOnPeak
+                
+                
+                
+
 
 
     
