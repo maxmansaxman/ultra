@@ -32,10 +32,10 @@ def FMCI_r_to_c(rD,r13):
 def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan, frag_rate=0.79):
     ''' Solves the linear equations to accurately calculate
     the bulk composition of d13C and d18O. '''
-    r13C_vpdb = 0.0112372 # craig (1957)
+    r13C_vpdb = 0.01117 # chang and li
 
     rD_vsmow = 0.00015576
-    # # Define wg values
+    # # Define wg values based on UC davis calibration
     d13C_ref_dict = {'GTS-1': -34.14}
     d13C_ref = d13C_ref_dict[ref_gas_ID]
     dD_ref_dict = {'GTS-1': -169.5}
@@ -53,11 +53,13 @@ def CH4_bulk_comp(ref_gas_ID, dD_wg, d13C_wg, d13CD_wg=np.nan, dD2_wg=np.nan, fr
     r13C_sa = m13CH4_sa*(1 + 3*frag_rate*rD_sa)/(1 - m13CH4_sa*frag_rate)
 
     
-    #wg clumped compositions from Eldridge et al. 2019 ACS Earth Space Chem.
+    #wg clumped compositions from linear calibration
+    D13CD_ref = 2.68
     D13CD_ref = 0
     r13CD_ref_stoch = 4*r13C_ref*rD_ref
     r13CD_ref = (D13CD_ref/1000 + 1)*r13CD_ref_stoch
 
+    DD2_ref = 8.08
     DD2_ref = 0
     rD2_ref_stoch = 6*rD_ref*rD_ref
     rD2_ref = (DD2_ref/1000 + 1)*rD2_ref_stoch
@@ -144,8 +146,8 @@ if __name__ == '__main__':
                                          'd13C_std_error',
                                          'D13CD_std_error',
                                          'DD2_std_error'])] = results[cols_to_make].std().round(3).values
-            d.loc[i,('Calculated data', ['D13CD_dD_var',
-                                         'D13CD_d13C_var'])] = results.cov()['D13CD_wg'].values[0:2]
+            d.loc[i,('Calculated data', ['D13CD_dD_cov',
+                                         'D13CD_d13C_cov'])] = results.cov()['D13CD_wg'].values[0:2]
 
         print('MC calcs complete. Writing new spreadsheet... ')
         while True:
@@ -155,6 +157,6 @@ if __name__ == '__main__':
                 break
             except(PermissionError):
                 is_it_closed = input('Could not write to spreadsheet '
-                                     '\n fluoromethane_summary_sheet_calc.xlsx '
+                                     '\n methane_summary_sheet_calc.xlsx '
                                      '\n because it is open. \n '
                                      'Close it and press ENTER to continue... ')

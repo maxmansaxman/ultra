@@ -210,6 +210,18 @@ def four_peak_model(mass, center_13CD, amplitude_13CD, amplitude_13C_adduct,
                                    cup_width=cup_width)
     return(intensity)
 
+def three_peak_model(mass, center_13C, amplitude_13C, amplitude_D,
+                     amplitude_adduct,
+                     sigma, cup_width):
+    intensity = peak_shape_model(mass, center_13C, amplitude_13C, sigma,
+                                 cup_width=cup_width) \
+                + peak_shape_model(mass, center_13C + 0.00292,
+                                   amplitude_D, sigma, cup_width=cup_width) \
+                + peak_shape_model(mass, center_13C + 0.00447,
+                                   amplitude_adduct, sigma,
+                                   cup_width=cup_width)
+    return(intensity)
+
 
 def one_peak_minimizer(p, *extra_args):
     masses, signal = extra_args
@@ -228,6 +240,13 @@ def four_peak_minimizer(p, *extra_args):
     misfit = np.abs(model - signal)
     return(np.sum(misfit))
 
+def three_peak_minimizer(p, *extra_args):
+    masses, signal, = extra_args
+    model = three_peak_model(masses, p[0], p[1], p[2], p[3], p[4],
+                            p[5])
+    misfit = np.abs(model - signal + p[6])
+    return(np.sum(misfit))
+
 
 def compute_resolution(hrdf):
     peakMax = hrdf['H4_model'].max()
@@ -237,9 +256,13 @@ def compute_resolution(hrdf):
     for i, pt in enumerate(resEval['pts']):
         signal = pt*peakMax
         for k in ['model', 'interp']:
-            theseMasses = hrdf.loc[hrdf['H4_' + k] > signal, 'Mass'].values[[0,-1]]
-            key = '{0}_{1}'.format(k, pt)
-            resEval[key] = theseMasses
+            try:
+                theseMasses = hrdf.loc[hrdf['H4_' + k] > signal, 'Mass'].values[[0,-1]]
+                key = '{0}_{1}'.format(k, pt)
+                resEval[key] = theseMasses
+            except(IndexError):
+                print('No detectable peak in scan')
+                return(np.nan, np.nan)
     redf = pd.DataFrame(data=resEval)
     modelRes = (18.01/(redf['model_0.05'] - redf['model_0.95'])).abs().mean()
     interpRes = (18.01/(redf['interp_0.05'] - redf['interp_0.95'])).abs().mean()
@@ -315,10 +338,13 @@ def fit_H2O_peaks(dh):
                                           'H4_model': hrH2O})
         hrdf['Mass'] = hrdf['Mass_center']
         hrdf['H4_interp'] = thisInterp(hrdf['Mass_center'])
-
-        modelRes, interpRes = compute_resolution(hrdf)
-        H2OResults['resolution_erf'].append(modelRes)
-        H2OResults['resolution_interp'].append(interpRes)
+        
+        try:
+            modelRes, interpRes = compute_resolution(hrdf)
+            H2OResults['resolution_erf'].append(modelRes)
+            H2OResults['resolution_interp'].append(interpRes)
+        except(TypeError):
+            continue
 
     for thisInt in dh['Integration'].unique():
         thisDh = dh.loc[dh['Integration']==thisInt]
@@ -413,7 +439,24 @@ def loop_and_make_adduct_line(da, h2r):
     tails = h2r[['tailing_13CH5', 'tailing_12CH4D']].mean()
     return(fits, tails)
 
+def check_D2_resolution(adductFile):
+    # import scan files
+    dsf = import_scans_stich_masses(adductFile)
+    # get scattered ion background, apply it
+    dsf['ReferenceCollector_raw'] = dsf['ReferenceCollector'].copy()
+    dsf['MasterCollector_raw'] = dsf['MasterCollector'].copy()
+    
+    
+    bgscat = dsf.loc[(dsf['Mass ReferenceCollector (u)'] > 18.016) & (dsf['block']==2), 'ReferenceCollector'].mean()
+    dsf['ReferenceCollector'] -= bgscat
 
+    dh = dsf.loc[dsf['block']==2, :].copy()
+    da = dsf.loc[dsf['block']==1, :].copy()
+    # get resolution and tailing params from H2O scan
+    h2r = fit_H2O_peaks(dh)
+    # determine adduct lines by fitting adduct scans
+    fits, tails = loop_and_make_adduct_line(da, h2r)
+    return(h2r)
 
 
 def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=False,
@@ -588,6 +631,7 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
         bgsUsed = {}
         for thisPeak in peakIDs:
             makeAdductLine = False
+            dynamicDbg = False
 
             dr[thisPeak + '_raw'] = dr[thisPeak].copy()
             # apply bgs
@@ -604,11 +648,117 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                 dbgNH3 = bgNH3.reset_index().groupby('is_sample', group_keys=True)
                 tbg = dbgNH3[thisPeak]
 
+
+                    
+                    
+                  
+
+
             bgDiff = np.abs(tbg.mean()[1] - tbg.mean()[0])
             bgThresh = (3*tbg.std()/np.sqrt(tbg.count())).mean()
-            
+  
+            if '_dD_' in d_data_file and thisPeak=='i17':
+                dynamicDbg = True
+                # backgrounds for 
+                # dDBgSlope = -3.5683083291606244e-06
+                if 'sweep' in blockIDs:
+                    sweepMid = int(len(dsweep)/2)
+                    if sweepMid < 200:
+                        fromEnd = -10
+                    else:
+                        fromEnd = -35
+                    dsweep['is_sample'] = 0
+                    dsweep['is_outlier'] = False
+                    dsweep['cycle_number'] = 0
+                    dsweep.loc[dsweep.index>(sweepMid-1), 'is_sample'] = 1
+                    # compute normal background
+                    offPeakBg = tbg.mean().mean()
+                
+                    dsweep['ReferenceCollector_raw'] = dsweep['ReferenceCollector'].copy()
+                    dsweep['ReferenceCollector'] -= offPeakBg
+                    
+                    dsweep[thisPeak] = dsweep['ReferenceCollector']
+                    dsweep['basePeak'] = dsweep['MasterCollector']
+                    dsweep['i16'] = dsweep['basePeak']
+                    dsweep['massPosition'] = dsweep.index%sweepMid
+
+                    # dg = dsweep.groupby('is_sample')
+                    windows = pd.DataFrame(data={'key': ['bg1', 'bg2', '13CH4', '12CH3D', '12CH5', '12CH4'],
+                             'window': [(65,105), (240,270), (140, 165), (180, 205), (205, 225), (140, 165)],
+                             'cup': ['i17', 'i17', 'i17', 'i17', 'i17', 'i16'],
+                             'operation': ['mean', 'mean', 'max', 'max', 'max', 'mean'], 
+                             'trueMass' : [17, 17.1, 17.03465497, 17.03757687, 17.03912516, 16.03130013]})
+                    windows = windows.set_index('key')
+                    dsd = {}
+                    for k, row in windows.iterrows():
+                        thisSlice = dsweep.loc[dsweep['massPosition'].between(*row['window']), :].groupby(['is_sample'])
+                        dsd[k] = getattr(thisSlice[row['cup']], row['operation'])()
+
+                    ds = pd.DataFrame(dsd)
+                    ds['bg_mean'] = (ds['bg1'] + ds['bg2'])/2
+                    onH4 = ['13CH4', '12CH3D', '12CH5']
+                    for k in onH4:
+                        ds[k+'_bgcorr'] = ds[k] - ds['bg_mean']
+                    ds['R13'] = ds['13CH4_bgcorr']/ds['12CH4']
+                    H4_transmission = ds['R13'][0]/((-34.14/1000+1)*0.01117)
+                    ds['RD'] = ds['12CH3D_bgcorr']/ds['12CH4']
+                    ds['Radduct'] = ds['12CH5_bgcorr']/ds['12CH4']
+                    # compute adduction rate 
+                    k_factor = (ds['Radduct']/ds['12CH4']).mean()
+                    ds['cts_on_12CH3D'] = ds['12CH4']/H4_transmission*(ds['R13'] + ds['12CH4']*k_factor + ds['RD']*(1-H4_transmission))
+                    # get slope of line
+                    dDBg_slope = (ds['bg_mean'] / ds['cts_on_12CH3D']).mean()
+                    # plot these data and fits
+                    fig, ax = plt.subplots(nrows=2, ncols=2, sharex=False, figsize=(10,6))
+                    ax = ax.ravel()
+                    # plot full scans
+                    for isSample in [0,1]:
+                        for iax in [0,2]:
+                            ax[iax].plot('massPosition', 'ReferenceCollector_raw','.', color=f'C{isSample}',
+                                       alpha=0.5, data=dsweep.loc[dsweep['is_sample']==isSample, :])
+                        massRange = ax[2].get_xlim()
+                        ax[2].plot(massRange, ds.loc[isSample, 'cts_on_12CH3D']*dDBg_slope*np.array([1,1]) + offPeakBg, ':', color=f'C{isSample}')
+                        ax[1].plot('12CH4', 'Radduct', 'o', color=f'C{isSample}', data=ds.loc[isSample, :])
+                        ax[3].plot('12CH4', 'bg_mean', 'o', color=f'C{isSample}', data=ds.loc[isSample, :])
+                        xRange = np.array([ds['12CH4'].min()*0.95, ds['12CH4'].max()*1.05])
+                        ax[3].plot(xRange, ds.loc[isSample, 'cts_on_12CH3D']/ds.loc[isSample, '12CH4']*dDBg_slope*xRange, ':', color=f'C{isSample}')
+                    ax[2].set_ylim(ds['bg_mean'].min()*1.5 + offPeakBg, ds['bg_mean'].max()*0.1 + offPeakBg)
+                    ax[1].plot(xRange, xRange*k_factor, '-', color='grey')
+                    ax[2].set_xlabel('Mass position')
+                    ax[3].set_xlabel(r'i($^{12}CH_4$) (cps)')
+                    ax[2].set_xlim(0, dsweep['massPosition'].max())
+                    ax[0].set_xlim(0, dsweep['massPosition'].max())
+                    fig.savefig('dD_bgs.pdf')
+                    
+                        
+                    # di16 = dg['basePeak'].apply(lambda group: group.nlargest(10).mean())
+                    # dDBgIntercept = (tbg.mean() - di16.mean()*dDBgSlope).mean()
+                
+                try:
+                    bgfs = {'slope': dDBg_slope, 'k_factor': k_factor,
+                            'H4_trans': H4_transmission, 'R13': ds['R13'].values,
+                            'RD': ds['RD'].values, 'off_peak_bg': offPeakBg}
+                except(NameError):
+                    print('No sweep block for dD detected.')
+                    print('Input backgrounds manually')
+                    bgfs = []
+                    for i, gas in enumerate(['Std', 'Sample']):
+                        while True:
+                            try:
+                                thisBg = input(f'Enter bg for {gas} on {thisPeak}: ').strip()
+                                thisBg = float(thisBg)
+                                break
+                            except (SyntaxError, ValueError):
+                                print("Not an interpretable number, try again ")
+                                continue
+                        bgfs.append(thisBg)
+                    dynamicDbg = False
+                    
+                        
+                                    
+                                
             # 2.4 Special treatment just for D2 peak, which has a tailing corr
-            if '_dD2_' in d_data_file and thisPeak=='i18':
+            elif '_dD2_' in d_data_file and thisPeak=='i18':
                 # makeAdductLine = False
                 # check if adduct sweep export in folder
                 filesInFolder = os.listdir()
@@ -773,6 +923,17 @@ def process_Qtegra_csv_file(d_data_file, peakIDs, blockIDs, prompt_for_params=Fa
                                 
                 dr[thisPeak] = dr[thisPeak + '_raw'] -  dr[thisPeak + '_adductbg'] -  dr[thisPeak + '_scatbg']
                 makeAdductLine=False
+            
+            elif dynamicDbg:
+                dr[thisPeak] =  dr[thisPeak + '_raw']
+                for isSample in [0,1]:
+                   thisBg = bgfs['slope']*dr.loc[dr['is_sample']==isSample, 'i16']/bgfs['H4_trans']*(
+                       bgfs['R13'][isSample] + bgfs['k_factor']*dr.loc[dr['is_sample']==isSample, 'i16'] + 
+                       bgfs['RD'][isSample]*(1-bgfs['H4_trans'])) + bgfs['off_peak_bg']
+                   dr.loc[dr['is_sample']==isSample, thisPeak] -= thisBg
+                    
+                # dr[thisPeak] = dr[thisPeak + '_raw'] - (bgfs['slope']*dr['i16'] + bgfs['intercept'])
+                dynamicDbg = False
             else:  
                 for isSample in [0,1]:                                
                     dr.loc[dr['is_sample']==isSample,thisPeak] = dr.loc[
@@ -1116,12 +1277,15 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
     idx = pd.IndexSlice
     
     basePeak = peakIDs[0]
+    
+    onPeakCutoffs = {'i17': 50, 'i18':75}
 
     for peak in peakIDs[1:]:
         mass = peak.strip('i_')
         filtRatBase = 'R'+ mass + basedOn
         filtRatApply = 'R'+ mass + '_on_peak'
         iPeaks = [basePeak, peak]
+        onPeakCutoff = onPeakCutoffs[peak]
     
         
     
@@ -1162,7 +1326,7 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
     
         grps = dg[filtRatBase].groups
             
-            
+        
         
         grpIndex = ['block', 'acq_number', 'cycle_number', 'is_sample']
         dg2 = dr.groupby(grpIndex, group_keys=False)
@@ -1195,12 +1359,27 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         dr[filtRatApply] = dr[filtRatBase].copy()
         dr.loc[dr['is_off_peak'],filtRatApply] = np.nan
         
+        # dgTemp =dr.groupby(['block', 'measure_line', 'is_sample'])
+        # drm = pd.DataFrame(data = dg[cols_needed].mean())
+        # drm = drm.reset_index()
+        
+        # drm['P_imbalance'] = np.nan
+        # i_sample = drm.loc[drm['is_sample']==True, :].index
+        # percentOnPeak = (dr.loc[(dr['is_off_peak'] == False) & (
+        #     dr['signal_is_stable'])].groupby(['block','measure_line', 'is_sample'])[
+        #         basePeak].count()/dgTemp[
+        #             basePeak].count()*100).values
+        # iTooNoisy = percentOnPeak < onPeakCutoff
+        # badRows = dgTemp['measure_line'].mean()[iTooNoisy].astype(int).values
+
+        
         # do one more groupby with cleaned data
         dg = dr.groupby(['block', 'acq_number', 'is_sample'], group_keys=True)
         RmedOnPeak = dg[filtRatApply].median().rename('R_med_on_peak')
         deltaMedOnPeak = (RmedOnPeak[idx[:,:,1]]/RmedOnPeak[idx[:, :, 0]]-1)*1000
         # refit modes after filtering
         Rranges = dg[filtRatApply].apply(lambda x: np.linspace(x.min(), x.max(), num=int(1e4)))
+        Rcount = dg[filtRatApply].count().rename('n')
 
         try:
             skewFits = dg[filtRatApply].apply(lambda x: skewnorm.fit(x.dropna()))
@@ -1228,7 +1407,7 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         dms['delta_mode_on_peak'] = deltaModeOnPeak
     
         # combine into a df and save
-        dmSum = pd.concat([imeds, Rmode, Rmed, RmedOnPeak, RmodeOnPeak, dms], axis=1)
+        dmSum = pd.concat([imeds, Rmode, Rmed, Rcount, RmedOnPeak, RmodeOnPeak, dms], axis=1)
         dmSum.to_excel('delta{0}_by_acq.xlsx'.format(mass), merge_cells=False)
         
         # make compute deltas and make a df of this to export bc possibly more robust
@@ -1238,7 +1417,10 @@ def filter_for_max_ratios(dr, peakIDs, sigmaFilter=5, dbr=[], nHighest=5, basedO
         for grpID in grps:
             thisAx = ax[int(grpID[1]),int(grpID[2])]
             theseData = dg.get_group(grpID)
-            thisAx.plot('x', 'pdf', '-', data=skewModes.loc[grpID], color='C{0}'.format(grpID[2]))
+            try:
+                thisAx.plot('x', 'pdf', '-', data=skewModes.loc[grpID], color='C{0}'.format(grpID[2]))
+            except(UnboundLocalError):
+                print('no skew modes to plot')
             thisAx.hist(theseData[filtRatBase], bins=xBins[grpID[2]], color='C{0}'.format(grpID[2]), alpha=0.4, density=True)
             thisAx.hist(theseData[filtRatApply], bins=xBins[grpID[2]], color='C{0}'.format(grpID[2]), alpha=0.4, density=True)
     
@@ -1492,32 +1674,34 @@ def get_list_of_files_to_import():
     acq_name_list = [l.strip(',').strip("'") for l in acq_name_list]
     return(acq_name_list)
 
-###########################################################################
-#
-# Main script
-#
-###########################################################################
 
 
-drs = []
-drms = []
-file_names = []
-
-acq_name_list = get_list_of_files_to_import()
-cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks = get_measurement_params(
-    file_name=acq_name_list[0], auto_detect=True)
-for i in acq_name_list:
-    if not os.path.exists(os.path.join(os.path.dirname(i),'d_data_all_summary.xlsx')):
-        os.chdir(os.path.dirname(i))
-    dr, drm, file_name = process_Qtegra_csv_file(i, peakIDs, blockIDs, sigma_filter=3, prompt_for_params=False,
-                                                 cycle_num=cycle_num, integration_time=integration_time,
-                                                 integration_num=integration_num, prompt_for_backgrounds=False,
-                                                 input_tail_D2_background=True, repeatBlocks=repeatBlocks)
-    drs.append(dr)
-    drms.append(drm)
-    file_names.append(file_name)
-    export_data(dr, drm, file_name, peakIDs)
-    if input('parse log file for {0}: (y/n)? '.format(file_name)).lower() != 'n':
+def run_main_script(filePath = None):
+    drs = []
+    drms = []
+    file_names = []
+    
+    if filePath is None:
+        acq_name_list = get_list_of_files_to_import()
+    else:
+        acq_name_list = [filePath]
+    if acq_name_list[0].endswith('_adduct.csv'):
+        h2r = check_D2_resolution(acq_name_list[0])
+        return
+    cycle_num, integration_time, integration_num, peakIDs, blockIDs, repeatBlocks = get_measurement_params(
+        file_name=acq_name_list[0], auto_detect=True)
+    for i in acq_name_list:
+        if not os.path.exists(os.path.join(os.path.dirname(i),'d_data_all_summary.xlsx')):
+            os.chdir(os.path.dirname(i))
+        dr, drm, file_name = process_Qtegra_csv_file(i, peakIDs, blockIDs, sigma_filter=3, prompt_for_params=False,
+                                                     cycle_num=cycle_num, integration_time=integration_time,
+                                                     integration_num=integration_num, prompt_for_backgrounds=False,
+                                                     input_tail_D2_background=True, repeatBlocks=repeatBlocks)
+        drs.append(dr)
+        drms.append(drm)
+        file_names.append(file_name)
+        export_data(dr, drm, file_name, peakIDs)
+        # if input('parse log file for {0}: (y/n)? '.format(file_name)).lower() != 'n':
         log_file, peak_centers = parse_log_file(i)
         # test if peak centered every time
         colsToAdd= ['center_mass', 'delta_offset', 'mass_offset']
@@ -1568,15 +1752,29 @@ for i in acq_name_list:
             except(ValueError):
                 print('Unable to align peak centers')
 
-# consolidate all data frames
-dr_all = drs[0].copy()
-drm_all = drms[0].copy()
-for i in range(1,len(drs)):
-    print(i)
-    dr_all = dr_all.append(drs[i])
-    drm_all = drm_all.append(drms[i])
-# re_index to preserve full order
-dr_all.reset_index(drop=False, inplace=True)    
-drm_all.reset_index(drop=True, inplace=True)
-dr_all.to_excel('d_data_all.xlsx', freeze_panes=(1,0), header=True)
-drm_all.to_excel('d_data_all_summary.xlsx', freeze_panes=(1,0), header=True)
+    # consolidate all data frames
+    dr_all = drs[0].copy()
+    drm_all = drms[0].copy()
+    for i in range(1,len(drs)):
+        print(i)
+        dr_all = dr_all.append(drs[i])
+        drm_all = drm_all.append(drms[i])
+    # re_index to preserve full order
+    dr_all.reset_index(drop=False, inplace=True)    
+    drm_all.reset_index(drop=True, inplace=True)
+    dr_all.to_excel('d_data_all.xlsx', freeze_panes=(1,0), header=True)
+    drm_all.to_excel('d_data_all_summary.xlsx', freeze_panes=(1,0), header=True)
+
+
+###########################################################################
+#
+# Main script
+#
+###########################################################################
+
+
+
+
+if __name__ == "__main__":
+    run_main_script()
+    

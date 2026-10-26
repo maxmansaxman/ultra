@@ -182,14 +182,17 @@ def compute_N2_contents(fileName):
                        data=dsn.loc[dsn['is_sample']==j, :])
             ax[i,1].plot('i', peak + '_justN2', 'P', alpha=0.1, markersize=5, color='C{0}'.format(j),
                        data=dsn.loc[dsn['is_sample']==j, :])
-        # discount any row where RN2 is less than 0.00%
+        # discount any row where RN2 is less than 0.00% or greater than 0.004
+    iN2TooHigh = dsn['RN2_i28'] > 0.15    
     iN2TooLow = dsn['RN2_i28'] < 0        
-    dsn.loc[iN2TooLow,['i28_justN2', 'i29_justN2']] = np.nan
+    dsn.loc[(iN2TooLow )| (iN2TooHigh),['i28_justN2', 'i29_justN2']] = np.nan
     fig.savefig('N2_data_all.pdf')
     # use average of times when we got this right
-    R15fixed = 0.00352
+    R15fixed = 0.0036765
+    # clumped isotope enrichment of N2 in air, from Yeung et al., Sci Adv. 2017
+    D30_N2_air = 19 
     dsn['R15'] = dsn['i29_justN2']/dsn['i28_justN2']/2
-    dsn['i30_15N2_pred'] = dsn['i28_justN2']*R15fixed**2
+    dsn['i30_15N2_pred'] = dsn['i28_justN2']*(R15fixed**2)*(D30_N2_air/1000+1)
     # dsn['i30_15N2_pred'] = dsn['i28_justN2']*(dsn['R15']**2)
     dsn['percent_N2'] = dsn['i28_justN2']/dsn['i28_pred']*100
     
@@ -202,31 +205,60 @@ def compute_N2_contents(fileName):
     dgf = dsn.groupby(['is_sample'])
     dgfm = dgf.mean()
     
-    
-    fig, ax = plt.subplots()
-    N2_fits = []
     d15N = (dgfm['R15'][1]/dgfm['R15'][0]-1)*1000
-    dsn['i30_N2_corr'] = np.nan
+
+    # add a filter step
+    dgm['use cycle'] = True
+    percentN2Mismatch = (dgm['RN2_i28']/dgm['percent_N2']*100-1)*100
+    badCyclesAuto = np.abs(percentN2Mismatch)>1
+    dgm['use cycle'] = ~badCyclesAuto    
     
-    for i, gas in enumerate(['Std','Sample']):
-        thisDf = dgm.loc[idx[i], :]
-        ax.plot('i28_pred', 'i30_15N2_pred', 'o', color='C{0}'.format(i),
-                data=thisDf,label='{0}: {1:.2f}% N2'.format(gas, thisDf['percent_N2'].mean()) )
-        thisFit = np.polyfit(thisDf['i28_pred'], thisDf['i30_15N2_pred'], 1)
-        xrange = np.linspace(thisDf['i28_pred'].min(), thisDf['i28_pred'].max())
-        ax.plot(xrange, xrange*thisFit[0] + thisFit[1], '-',
-                zorder=0, color='C{0}'.format(i),
-                label='__nolegend__')
-        N2_fits.append(thisFit)
+
+    
+    while True:    
+        fig, ax = plt.subplots()
+        N2_fits = []
+        dsn['i30_N2_corr'] = np.nan
         
-        dsn.loc[dsn['is_sample']==i, 'i30_N2_corr'] = dsn.loc[dsn['is_sample']==i,'i30'] - dsn.loc[
-            dsn['is_sample']==i, 'i28']*N2_fits[i][0] + N2_fits[i][1]
-    ax.text(0.99, 0.01,'Sample d15N = {0:.1f}‰'.format(d15N),
-            transform=ax.transAxes, va='bottom', ha='right')
-    ax.set_xlabel('i28 (cps)')
-    ax.set_ylabel(r'Pred. $^{15}N_2$ on i30 (cps)')
-    ax.legend()
-    fig.savefig('N2_calibration.pdf')
+        for i, gas in enumerate(['Std','Sample']):
+            thisDf = dgm.loc[(dgm['use cycle']), :].loc[(idx[i]), :].dropna(how='any', axis=1)
+            ax.plot('i28_pred', 'i30_15N2_pred', 'o', color='C{0}'.format(i), alpha=0.2,
+                    data=dgm.loc[(idx[i]), :],label='__nolegend__' )
+
+            ax.plot('i28_pred', 'i30_15N2_pred', 'o', color='C{0}'.format(i),
+                    data=thisDf,label='{0}: {1:.2f}% N2'.format(gas, thisDf['percent_N2'].mean()) )
+            thisFit = np.polyfit(thisDf['i28_pred'], thisDf['i30_15N2_pred'], 1)
+            xrange = np.linspace(thisDf['i28_pred'].min(), thisDf['i28_pred'].max())
+            ax.plot(xrange, xrange*thisFit[0] + thisFit[1], '-',
+                    zorder=0, color='C{0}'.format(i),
+                    label='__nolegend__')
+            N2_fits.append(thisFit)
+            
+            dsn.loc[dsn['is_sample']==i, 'i30_N2_corr'] = dsn.loc[dsn['is_sample']==i,'i30'] - dsn.loc[
+                dsn['is_sample']==i, 'i28']*N2_fits[i][0] + N2_fits[i][1]
+        ax.text(0.99, 0.01,'Sample d15N = {0:.1f}‰'.format(d15N),
+                transform=ax.transAxes, va='bottom', ha='right')
+        ax.set_xlabel('i28 (cps)')
+        ax.set_ylabel(r'Pred. $^{15}N_2$ on i30 (cps)')
+        ax.legend()
+        while True:
+            try:
+                fig.savefig('N2_calibration.pdf')
+                dgm.to_excel('N2_deltas_to_check.xlsx')
+                break
+            except(PermissionError):
+                print("Cannot write to file because it is open")
+                waitPrompt = input('Close the file and press ENTER to continue...')
+        
+        okToProceed = input('N2 calibration o(k) or (r)eimport data sheet?...').lower().strip()
+        if okToProceed =='r':
+            # import new version with bad cycles flagged
+            dgmReimport = pd.read_excel('N2_deltas_to_check.xlsx', index_col=[0,1])
+            goodCycles = dgmReimport['use cycle']
+            dgm['use cycle'] = goodCycles
+        else:
+            goodCycles = dgm['use cycle']
+            break
     
     # make summary df
     dsn['cycle_matched'] = (dsn['cycle_number']/2).astype(int)
@@ -234,7 +266,8 @@ def compute_N2_contents(fileName):
     dsn['R30'] = dsn['i30_N2_corr']/dsn['i28']
     dsn['R31'] = dsn['i31']/dsn['i28']
     
-    dgs = dsn.groupby(['is_sample', 'cycle_matched'])
+    goodCycleIDs = goodCycles.loc[goodCycles].index.get_level_values(1).values
+    dgs = dsn.loc[dsn['cycle_number'].isin(goodCycleIDs), :].groupby(['is_sample', 'cycle_matched'])
     
     toUse = ['i28', 'percent_N2', 'R29', 'R30', 'R31', 'R15']
     
@@ -1063,7 +1096,8 @@ def calculate_deltas(dr, peakIDs):
             dr[r+'_sample'] = dr.loc[dr['is_sample'] == 1, r + '_stable']
             cols_needed.extend([i,r+'_unfiltered', r+'_on_peak', r+'_stable', r+'_cln'])
     dg =dr.groupby(['block', 'measure_line', 'is_sample'])
-    drm = pd.DataFrame(data = dg[cols_needed].mean())
+    validCols = dr.columns.intersection(cols_needed)
+    drm = pd.DataFrame(data = dg[validCols].mean())
     drm = drm.reset_index()
     
     drm['P_imbalance'] = np.nan
@@ -1216,6 +1250,7 @@ def parse_log_file(data_file):
         '{0}_pressure_adjust_data.xlsx'.format(file_name))
     return(d, d_pc)
 
+#
 
 def get_list_of_files_to_import():
     acq_name =  input('Drag all Qtegra files to process ').replace('\\ ', ' ').strip("'").strip('"').strip()
@@ -1227,7 +1262,6 @@ def get_list_of_files_to_import():
 ###########################################################################
 #
 # Main script
-#
 ###########################################################################
 
 
@@ -1349,6 +1383,8 @@ if len(drms)>0:
         ax.plot(X[:,1], dfPreds['mean'], '-', color='grey')
         ax.plot(X[:,1], resRLM.predict(X), '--', color='grey')
         ax.fill_between(X[:,1], dfPreds['mean_ci_lower'], dfPreds['mean_ci_upper'], alpha=0.2, color='grey')
+        yInt = resOLS.get_prediction([1, 0]).summary_frame(alpha=0.5)
+        ax.text(0, 0, 'b={0:.3f}±{1:.3f}‰'.format(yInt['mean'][0], yInt['mean_se'][0]), transform=ax.transAxes)
         
         ax.set_xlabel('P imbalance (%)')
         ax.set_ylabel(delta + ' (‰ vs. wg)')

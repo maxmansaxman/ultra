@@ -21,7 +21,7 @@ plt.close('all')
 
 plt.ion()
 
-homeDir = os.getcwd()
+homeDir = 'C:/Users/Thermo/Documents/Ultra/Scripts/'
 dataDir = '/Users/Thermo/Documents/Ultra/Data/CO2/' 
 
 
@@ -106,11 +106,11 @@ def import_scans_stich_masses(fileName):
     while True:
         
         if 'CDD' in fileName:
-            CO2TemplatePath = homeDir + '/forCO2template/CO2_purity_template_CDD_v3.xlsx'
+            CO2TemplatePath = homeDir + '/forCO2template/CO2_purity_template_CDD_v5.xlsx'
             scanType='CDD'
             break
         elif 'amp' in fileName:
-            CO2TemplatePath = homeDir + '/forCO2template/CO2_purity_template_amp_v3.xlsx'
+            CO2TemplatePath = homeDir + '/forCO2template/CO2_purity_template_amp_v5.xlsx'
             scanType='amp'
             break
         else:
